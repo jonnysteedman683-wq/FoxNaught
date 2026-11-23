@@ -122,6 +122,12 @@ Conversation history is trimmed to the most recent messages (default 20, see
 `--history-limit`) so long-running memories cannot exceed the model's context
 window; the system prompt is always kept.
 
+**Memory archive**: `--memory-archive FILE` appends every trimmed message to a
+markdown file. When set, the system prompt gains a note telling the agent the
+archive exists so it can `read_file` past turns that left the context window.
+The Agent workflow passes `--memory-archive MEMORY.md` and ships the archive
+inside the `agent-memory` artifact so it accumulates across daily runs.
+
 **Live integration tests**: `tests/test_live.py` performs real API round trips
 (tool call, streaming, and memory) and runs automatically in the `live-test` CI
 job when `MISTRAL_API_KEY` is set; without the secret they are skipped.

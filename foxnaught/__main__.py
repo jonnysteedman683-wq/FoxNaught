@@ -30,6 +30,7 @@ def build_agent(
     base_dir: str,
     history_limit: int,
     history_char_budget: int,
+    memory_archive_path: str | None = None,
 ) -> Agent:
     client = MistralClient(model=model)
 
@@ -43,6 +44,7 @@ def build_agent(
         on_step=on_step,
         history_limit=history_limit,
         history_char_budget=history_char_budget,
+        memory_archive_path=memory_archive_path,
     )
 
 
@@ -153,6 +155,15 @@ def main(argv: list[str] | None = None) -> int:
         help="drop oldest messages until the history fits this many characters (0 disables)",
     )
     parser.add_argument(
+        "--memory-archive",
+        metavar="FILE",
+        default=None,
+        help=(
+            "append trimmed conversation messages to this markdown file so "
+            "the agent can read them back with the read_file tool"
+        ),
+    )
+    parser.add_argument(
         "--auth-token",
         default=None,
         help=(
@@ -169,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             base_dir=os.getcwd(),
             history_limit=args.history_limit or None,
             history_char_budget=args.history_char_budget or None,
+            memory_archive_path=args.memory_archive,
         )
     except MistralError as exc:
         print(f"error: {exc}", file=sys.stderr)
