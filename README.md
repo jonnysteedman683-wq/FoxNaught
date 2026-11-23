@@ -89,6 +89,9 @@ curl -s -X POST localhost:8080/chat \
 
 ### Docker
 
+The image runs as a non-root user (`foxnaught`), so mount a directory rather
+than a single file if you want the container to rewrite the memory file.
+
 ```bash
 docker build -t foxnaught .
 docker run -p 8080:8080 \
@@ -117,6 +120,9 @@ curl -s -X POST localhost:8080/chat \
 - **Watchdog** (`.github/workflows/watchdog.yml`): triggers whenever an Agent
   run fails and opens a GitHub issue titled `Agent run <id> failed` with the
   run link and failed job names (one issue per failed run, deduplicated).
+
+HTTP 429 responses are retried with backoff (1 s, then 2 s) with ±50 % jitter
+so many clients retrying in sync do not create a thundering herd.
 
 Conversation history is trimmed to the most recent messages (default 20, see
 `--history-limit`) so long-running memories cannot exceed the model's context

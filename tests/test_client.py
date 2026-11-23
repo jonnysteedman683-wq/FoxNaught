@@ -80,6 +80,14 @@ class MistralClientTest(unittest.TestCase):
             with self.assertRaises(MistralError):
                 self.client.chat([Message(role="user", content="hello")])
 
+    def test_retry_delay_applies_jitter(self) -> None:
+        client = MistralClient(api_key="test-key")
+        with mock.patch("foxnaught.client.random.uniform", return_value=1.5) as uniform:
+            self.assertEqual(client._retry_delay(1), 1.5)
+        uniform.assert_called_once_with(0.5, 1.5)
+        with mock.patch("foxnaught.client.random.uniform", return_value=0.1):
+            self.assertEqual(client._retry_delay(2), 0.2)
+
     def test_rate_limit_is_retried_then_succeeds(self) -> None:
         rate_limited = urllib.error.HTTPError(
             "u", 429, "Too Many Requests", {}, mock.MagicMock()
@@ -95,7 +103,9 @@ class MistralClientTest(unittest.TestCase):
             result = self.client.chat([Message(role="user", content="hello")])
         self.assertEqual(result.message.content, "ok")
         self.assertEqual(urlopen.call_count, 2)
-        sleep.assert_called_once_with(1.0)
+        (delay,) = sleep.call_args.args
+        self.assertGreaterEqual(delay, 0.5)
+        self.assertLessEqual(delay, 1.5)
 
     def test_rate_limit_exhausts_retries(self) -> None:
         rate_limited = urllib.error.HTTPError(

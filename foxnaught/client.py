@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 import urllib.error
 import urllib.request
@@ -63,6 +64,7 @@ class MistralError(RuntimeError):
 
 class MistralClient:
     RETRY_DELAYS = (1.0, 2.0)
+    RETRY_JITTER_RANGE = (0.5, 1.5)
 
     def __init__(
         self,
@@ -153,7 +155,7 @@ class MistralClient:
         last_rate_limit: urllib.error.HTTPError | None = None
         for attempt in range(attempts):
             if attempt:
-                time.sleep(self.RETRY_DELAYS[attempt - 1])
+                time.sleep(self._retry_delay(attempt))
             try:
                 return urllib.request.urlopen(request, timeout=120)
             except urllib.error.HTTPError as exc:
@@ -165,6 +167,11 @@ class MistralClient:
             except urllib.error.URLError as exc:
                 raise MistralError(f"could not reach the Mistral API: {exc.reason}") from exc
         raise MistralError("rate limit retries exhausted", ) from last_rate_limit
+
+    def _retry_delay(self, attempt: int) -> float:
+        base = self.RETRY_DELAYS[attempt - 1]
+        low, high = self.RETRY_JITTER_RANGE
+        return base * random.uniform(low, high)
 
     @staticmethod
     def _parse_response(body: dict[str, Any]) -> ChatResponse:

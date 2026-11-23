@@ -61,7 +61,9 @@ class ChatStreamTest(unittest.TestCase):
             events = list(make_client().chat_stream([Message(role="user", content="hi")]))
         self.assertEqual([e.content for e in events], ["ok"])
         self.assertEqual(urlopen.call_count, 2)
-        sleep.assert_called_once_with(1.0)
+        (delay,) = sleep.call_args.args
+        self.assertGreaterEqual(delay, 0.5)
+        self.assertLessEqual(delay, 1.5)
 
 
 if __name__ == "__main__":
