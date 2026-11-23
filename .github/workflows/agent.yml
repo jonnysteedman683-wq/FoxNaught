@@ -40,4 +40,11 @@ jobs:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           MISTRAL_MODEL: ${{ inputs.model || 'mistral-small-latest' }}
           AGENT_PROMPT: ${{ inputs.prompt || 'Review the repo state in one sentence.' }}
-        run: python -m foxnaught --model "$MISTRAL_MODEL" --one-shot "$AGENT_PROMPT"
+        run: python -m foxnaught --model "$MISTRAL_MODEL" --memory agent-memory.json --one-shot "$AGENT_PROMPT"
+      - name: Upload conversation memory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-memory
+          path: agent-memory.json
+          if-no-files-found: ignore
