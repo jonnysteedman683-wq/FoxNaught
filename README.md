@@ -111,8 +111,12 @@ curl -s -X POST localhost:8080/chat \
   - **prompt** — what the agent should do (default: review the repo and write `REPORT.md`)
   - **continue_from** — `previous` (default) resumes the last run's conversation via the `agent-memory` artifact; `fresh` starts clean
   - **commit_report** — opt-in commit of `REPORT.md` back to `main`
-  Both `REPORT.md` and the conversation memory are uploaded as run artifacts. A
-  commented-out `schedule` block in the workflow enables recurring runs.
+  Both `REPORT.md` and the conversation memory are uploaded as run artifacts.
+  The workflow is scheduled daily at 06:00 UTC (GitHub may delay scheduled runs
+  by up to an hour on low-traffic repositories).
+- **Watchdog** (`.github/workflows/watchdog.yml`): triggers whenever an Agent
+  run fails and opens a GitHub issue titled `Agent run <id> failed` with the
+  run link and failed job names (one issue per failed run, deduplicated).
 
 Conversation history is trimmed to the most recent messages (default 20, see
 `--history-limit`) so long-running memories cannot exceed the model's context
