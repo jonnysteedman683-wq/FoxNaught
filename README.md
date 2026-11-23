@@ -74,10 +74,16 @@ curl -s -X POST localhost:8080/chat \
 
 - **CI** (`.github/workflows/ci.yml`): runs the test suite on every push to `main` and pull request.
 - **Agent** (`.github/workflows/agent.yml`): runs the agent headlessly via `--one-shot`.
-  Trigger it manually from the Actions tab with a prompt and optional model, or enable
-  the commented-out `schedule` block in the workflow for recurring runs. The
-  conversation history is saved as the `agent-memory` run artifact, so the agent
-  can build on previous runs when you re-attach it.
+  Trigger it manually from the Actions tab with:
+  - **prompt** — what the agent should do (default: review the repo and write `REPORT.md`)
+  - **continue_from** — `previous` (default) resumes the last run's conversation via the `agent-memory` artifact; `fresh` starts clean
+  - **commit_report** — opt-in commit of `REPORT.md` back to `main`
+  Both `REPORT.md` and the conversation memory are uploaded as run artifacts. A
+  commented-out `schedule` block in the workflow enables recurring runs.
+
+Conversation history is trimmed to the most recent messages (default 20, see
+`--history-limit`) so long-running memories cannot exceed the model's context
+window; the system prompt is always kept.
 
 Required repository secret: `MISTRAL_API_KEY` (Settings → Secrets and variables → Actions).
 Without it, agent runs fail with a clear error message.
