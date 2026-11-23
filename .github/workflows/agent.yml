@@ -1,0 +1,43 @@
+name: Agent
+
+# For recurring runs, add a schedule trigger, e.g.:
+#
+#   schedule:
+#     - cron: "0 6 * * *"
+#
+# It is intentionally omitted so recurring API usage is opt-in.
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Prompt to send to the agent"
+        required: true
+        default: "What is 6 * 7? Use the calculate tool."
+      model:
+        description: "Mistral model (optional)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-run
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run agent
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          MISTRAL_MODEL: ${{ inputs.model || 'mistral-small-latest' }}
+          AGENT_PROMPT: ${{ inputs.prompt || 'Review the repo state in one sentence.' }}
+        run: python -m foxnaught --model "$MISTRAL_MODEL" --one-shot "$AGENT_PROMPT"

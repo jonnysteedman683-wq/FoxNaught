@@ -57,6 +57,16 @@ curl -s -X POST localhost:8080/chat \
   -d '{"message": "What is the current UTC time?"}'
 ```
 
+### GitHub Actions
+
+- **CI** (`.github/workflows/ci.yml`): runs the test suite on every push to `main` and pull request.
+- **Agent** (`.github/workflows/agent.yml`): runs the agent headlessly via `--one-shot`.
+  Trigger it manually from the Actions tab with a prompt and optional model, or enable
+  the commented-out `schedule` block in the workflow for recurring runs.
+
+Required repository secret: `MISTRAL_API_KEY` (Settings → Secrets and variables → Actions).
+Without it, agent runs fail with a clear error message.
+
 ## Adding a tool
 
 ```python
