@@ -11,6 +11,7 @@ from .client import Message, MistralClient
 from .tools import ToolRegistry
 
 DEFAULT_MAX_STEPS = 8
+DEFAULT_HISTORY_LIMIT = 20
 
 SYSTEM_PROMPT = (
     "You are FoxNaught, a helpful assistant. Use the available tools when they "
@@ -27,12 +28,14 @@ class Agent:
         system_prompt: str = SYSTEM_PROMPT,
         max_steps: int = DEFAULT_MAX_STEPS,
         on_step: Callable[[str, object], None] | None = None,
+        history_limit: int | None = DEFAULT_HISTORY_LIMIT,
     ) -> None:
         self.client = client
         self.registry = registry
         self.system_prompt = system_prompt
         self.max_steps = max_steps
         self.on_step = on_step
+        self.history_limit = history_limit
         self.history: list[Message] = [Message(role="system", content=system_prompt)]
 
     def reset(self) -> None:
@@ -46,6 +49,7 @@ class Agent:
             message = response.message
             if not message.tool_calls:
                 self.history.append(message)
+                self._trim_history()
                 return message.content or ""
             self.history.append(message)
             for call in message.tool_calls:
@@ -53,6 +57,16 @@ class Agent:
         raise RuntimeError(
             f"agent exceeded {self.max_steps} tool steps without producing a reply"
         )
+
+    def _trim_history(self) -> None:
+        """Keep the system prompt plus the most recent history_limit messages."""
+        limit = self.history_limit
+        if limit is None or len(self.history) <= limit:
+            return
+        keep = self.history[-(limit - 1):]
+        while keep and keep[0].role == "tool":
+            keep.pop(0)
+        self.history = [self.history[0], *keep]
 
     def run_turn_stream(
         self,
@@ -81,6 +95,7 @@ class Agent:
             )
             self.history.append(message)
             if not message.tool_calls:
+                self._trim_history()
                 return message.content or ""
             for call in message.tool_calls:
                 self._execute_call(call)
@@ -164,3 +179,4 @@ def load_history(agent: Agent, path: str) -> None:
     if messages[0].role != "system":
         messages.insert(0, Message(role="system", content=agent.system_prompt))
     agent.history = messages
+    agent._trim_history()

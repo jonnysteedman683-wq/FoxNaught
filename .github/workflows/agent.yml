@@ -13,11 +13,24 @@ on:
       prompt:
         description: "Prompt to send to the agent"
         required: true
-        default: "What is 6 * 7? Use the calculate tool."
+        default: "Review this repository and write a short review to REPORT.md using the write_file tool. Then summarise your review in the reply."
       model:
         description: "Mistral model (optional)"
         required: false
         default: ""
+      continue_from:
+        description: "Resume the previous run's conversation memory?"
+        required: false
+        default: previous
+        type: choice
+        options:
+          - previous
+          - fresh
+      commit_report:
+        description: "Commit REPORT.md to main when the agent wrote one"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -30,16 +43,32 @@ jobs:
   run-agent:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Restore previous conversation memory
+        if: ${{ inputs.continue_from == 'previous' || github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow agent.yml --status success \
+            --json databaseId --limit 20 \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }})][0].databaseId // empty")
+          if [ -n "$previous_id" ]; then
+            echo "Restoring memory from previous run $previous_id"
+            gh run download "$previous_id" -n agent-memory
+          else
+            echo "No previous successful run found; starting fresh"
+          fi
       - name: Run agent
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           MISTRAL_MODEL: ${{ inputs.model || 'mistral-small-latest' }}
-          AGENT_PROMPT: ${{ inputs.prompt || 'Review the repo state in one sentence.' }}
+          AGENT_PROMPT: ${{ inputs.prompt || (github.event_name == 'schedule' && 'Review the repository and update REPORT.md with any notable changes or findings since last time using the write_file tool.') || 'Review this repository and write a short review to REPORT.md using the write_file tool. Then summarise your review in the reply.' }}
         run: python -m foxnaught --model "$MISTRAL_MODEL" --memory agent-memory.json --one-shot "$AGENT_PROMPT"
       - name: Upload conversation memory
         if: always()
@@ -48,3 +77,22 @@ jobs:
           name: agent-memory
           path: agent-memory.json
           if-no-files-found: ignore
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report
+          path: REPORT.md
+          if-no-files-found: ignore
+      - name: Commit report to main
+        if: ${{ inputs.commit_report == true && hashFiles('REPORT.md') != '' }}
+        run: |
+          git config user.name "foxnaught-agent"
+          git config user.email "foxnaught-agent@users.noreply.github.com"
+          git add REPORT.md
+          if git diff --cached --quiet; then
+            echo "REPORT.md unchanged; nothing to commit"
+          else
+            git commit -m "Update REPORT.md (agent run ${{ github.run_id }})"
+            git push
+          fi

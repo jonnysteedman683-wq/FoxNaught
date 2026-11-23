@@ -23,6 +23,51 @@ def events_from_chunks(chunks: list[dict]) -> list[StreamEvent]:
     return [StreamEvent(delta=chunk.get("delta") or {}, finish_reason=chunk.get("finish_reason")) for chunk in chunks]
 
 
+class HistoryTrimTest(unittest.TestCase):
+    def fill(self, agent: Agent, turns: int) -> None:
+        from foxnaught.client import ChatResponse
+
+        side = [
+            ChatResponse(message=Message(role="assistant", content=f"reply {i}"))
+            for i in range(turns)
+        ]
+        agent.client.chat.side_effect = side
+        for i in range(turns):
+            agent.run_turn(f"msg {i}")
+
+    def test_history_is_trimmed_to_limit(self) -> None:
+        agent = make_agent()
+        agent.history_limit = 6
+        self.fill(agent, 10)
+        self.assertEqual(len(agent.history), 6)
+        self.assertEqual(agent.history[0].role, "system")
+        self.assertEqual(agent.history[-1].content, "reply 9")
+
+    def test_trim_drops_leading_tool_orphans(self) -> None:
+        agent = make_agent()
+        agent.history_limit = 4
+        agent.history.append(Message(role="user", content="q1"))
+        agent.history.append(
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "c1", "type": "function", "function": {"name": "now_utc", "arguments": None}}],
+            )
+        )
+        agent.history.append(Message(role="tool", name="now_utc", tool_call_id="c1", content="ok"))
+        agent.history.append(Message(role="assistant", content="r1"))
+        agent.history.append(Message(role="user", content="q2"))
+        agent.history.append(Message(role="assistant", content="r2"))
+        agent._trim_history()
+        self.assertEqual([m.role for m in agent.history], ["system", "assistant", "user", "assistant"])
+
+    def test_limit_can_be_disabled(self) -> None:
+        agent = make_agent()
+        agent.history_limit = None
+        self.fill(agent, 6)
+        self.assertEqual(len(agent.history), 13)
+
+
 class StreamingAgentTest(unittest.TestCase):
     def test_streams_plain_reply_to_on_delta(self) -> None:
         agent = make_agent()
