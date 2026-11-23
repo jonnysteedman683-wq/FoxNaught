@@ -6,7 +6,8 @@ import argparse
 import os
 import sys
 
-from .agent import DEFAULT_ARCHIVE_MAX_CHARS, DEFAULT_HISTORY_CHAR_BUDGET, DEFAULT_HISTORY_LIMIT, DEFAULT_MAX_STEPS, Agent, load_history, save_history
+from .actions import register_actions
+from .agent import DEFAULT_ARCHIVE_MAX_CHARS, DEFAULT_HISTORY_CHAR_BUDGET, DEFAULT_HISTORY_LIMIT, DEFAULT_MAX_STEPS, SYSTEM_PROMPT, Agent, load_history, save_history
 from .builtins import register_defaults
 from .client import MistralClient, MistralError
 from .files import register_files
@@ -21,6 +22,7 @@ def build_registry(base_dir: str) -> ToolRegistry:
     register_web(registry)
     register_files(registry, base_dir)
     register_github(registry)
+    register_actions(registry)
     return registry
 
 
@@ -32,6 +34,7 @@ def build_agent(
     history_char_budget: int,
     memory_archive_path: str | None = None,
     memory_archive_max_chars: int | None = None,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> Agent:
     client = MistralClient(model=model)
 
@@ -41,6 +44,7 @@ def build_agent(
     return Agent(
         client,
         build_registry(base_dir),
+        system_prompt=system_prompt,
         max_steps=max_steps,
         on_step=on_step,
         history_limit=history_limit,
@@ -166,6 +170,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--system-prompt",
+        metavar="TEXT",
+        default=SYSTEM_PROMPT,
+        help="replace the default system prompt (enables distinct agent roles)",
+    )
+    parser.add_argument(
         "--archive-max-chars",
         type=int,
         default=DEFAULT_ARCHIVE_MAX_CHARS,
@@ -193,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             history_char_budget=args.history_char_budget or None,
             memory_archive_path=args.memory_archive,
             memory_archive_max_chars=args.archive_max_chars or None,
+            system_prompt=args.system_prompt,
         )
     except MistralError as exc:
         print(f"error: {exc}", file=sys.stderr)

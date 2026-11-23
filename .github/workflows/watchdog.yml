@@ -2,7 +2,7 @@ name: Watchdog
 
 on:
   workflow_run:
-    workflows: ["Agent"]
+    workflows: ["Agent", "Assistant"]
     types: [completed]
   schedule:
     # Daily at 08:00 UTC — after the Agent cron and its worst-case delay
@@ -25,6 +25,7 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
         run: |
           TITLE="Agent run $RUN_ID failed"
           existing=$(gh issue list --repo "$REPO" --state open \
