@@ -13,6 +13,11 @@ from .tools import ToolRegistry
 DEFAULT_MAX_STEPS = 8
 DEFAULT_HISTORY_LIMIT = 20
 DEFAULT_HISTORY_CHAR_BUDGET = 50_000
+ARCHIVE_LINE_CAP = 2_000
+ARCHIVE_NOTE = (
+    "\n\nOlder conversation turns are archived at {path}; use the read_file tool "
+    "to consult that archive when details from earlier in the project matter."
+)
 
 SYSTEM_PROMPT = (
     "You are FoxNaught, a helpful assistant. Use the available tools when they "
@@ -31,10 +36,14 @@ class Agent:
         on_step: Callable[[str, object], None] | None = None,
         history_limit: int | None = DEFAULT_HISTORY_LIMIT,
         history_char_budget: int | None = DEFAULT_HISTORY_CHAR_BUDGET,
+        memory_archive_path: str | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
+        if memory_archive_path:
+            system_prompt += ARCHIVE_NOTE.format(path=memory_archive_path)
         self.system_prompt = system_prompt
+        self.memory_archive_path = memory_archive_path
         self.max_steps = max_steps
         self.on_step = on_step
         self.history_limit = history_limit
@@ -52,7 +61,7 @@ class Agent:
             message = response.message
             if not message.tool_calls:
                 self.history.append(message)
-                self._trim_history()
+                self._trim_history(archive=True)
                 return message.content or ""
             self.history.append(message)
             for call in message.tool_calls:
@@ -61,8 +70,9 @@ class Agent:
             f"agent exceeded {self.max_steps} tool steps without producing a reply"
         )
 
-    def _trim_history(self) -> None:
+    def _trim_history(self, archive: bool = False) -> None:
         """Keep the system prompt plus recent history within count and char limits."""
+        dropped: list[Message] = []
         while True:
             over_count = self.history_limit is not None and len(self.history) > self.history_limit
             over_chars = (
@@ -71,9 +81,11 @@ class Agent:
             )
             if not (over_count or over_chars) or len(self.history) <= 2:
                 break
-            self._drop_oldest()
+            dropped.extend(self._drop_oldest())
         while len(self.history) > 1 and self.history[1].role == "tool":
-            self.history.pop(1)
+            dropped.append(self.history.pop(1))
+        if archive and dropped and self.memory_archive_path:
+            archive_messages(self.memory_archive_path, dropped)
 
     def _history_chars(self) -> int:
         total = 0
@@ -83,14 +95,21 @@ class Agent:
                 total += sum(len(json.dumps(call)) for call in message.tool_calls)
         return total
 
-    def _drop_oldest(self) -> None:
+    def _drop_oldest(self) -> list[Message]:
         dropped = self.history.pop(1)
+        removed = [dropped]
         if dropped.tool_calls:
             drop_ids = {
                 call.get("id") for call in dropped.tool_calls if call.get("id")
             }
-            kept = [m for m in self.history[1:] if m.role != "tool" or m.tool_call_id not in drop_ids]
+            kept = []
+            for message in self.history[1:]:
+                if message.role == "tool" and message.tool_call_id in drop_ids:
+                    removed.append(message)
+                    continue
+                kept.append(message)
             self.history = [self.history[0], *kept]
+        return removed
 
     def run_turn_stream(
         self,
@@ -119,7 +138,7 @@ class Agent:
             )
             self.history.append(message)
             if not message.tool_calls:
-                self._trim_history()
+                self._trim_history(archive=True)
                 return message.content or ""
             for call in message.tool_calls:
                 self._execute_call(call)
@@ -170,6 +189,34 @@ class Agent:
             )
         )
 
+def archive_messages(path: str, messages: list[Message]) -> None:
+    """Append trimmed conversation messages to a markdown archive file."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    lines: list[str] = []
+    for message in messages:
+        text = (message.content or "").strip()
+        if len(text) > ARCHIVE_LINE_CAP:
+            text = text[:ARCHIVE_LINE_CAP] + " …"
+        if message.tool_calls:
+            calls = "; ".join(
+                (call.get("function") or {}).get("name", "unknown")
+                for call in message.tool_calls
+            )
+            lines.append(
+                f"- assistant tool_calls: {calls}"
+                + (f" (said: {text})" if text else "")
+            )
+        elif message.role == "tool":
+            lines.append(f"- tool result ({message.name}): {text}")
+        else:
+            lines.append(f"- {message.role}: {text}")
+    header = "" if os.path.exists(path) else "# Conversation memory archive\n\n"
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(header + "\n".join(lines) + "\n")
+
+
 def save_history(agent: Agent, path: str) -> None:
     """Write the agent conversation history to a JSON file."""
     data = [message.to_dict() for message in agent.history]
@@ -203,4 +250,4 @@ def load_history(agent: Agent, path: str) -> None:
     if messages[0].role != "system":
         messages.insert(0, Message(role="system", content=agent.system_prompt))
     agent.history = messages
-    agent._trim_history()
+    agent._trim_history(archive=True)
