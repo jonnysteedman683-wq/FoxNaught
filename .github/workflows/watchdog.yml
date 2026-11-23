@@ -1,0 +1,47 @@
+name: Watchdog
+
+on:
+  workflow_run:
+    workflows: ["Agent"]
+    types: [completed]
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  report-failure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: File an issue for the failed Agent run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          TITLE="Agent run $RUN_ID failed"
+          existing=$(gh issue list --repo "$REPO" --state open \
+            --search "$TITLE in:title" --json number --jq 'length')
+          if [ "$existing" != "0" ]; then
+            echo "Issue for run $RUN_ID already exists; skipping"
+            exit 0
+          fi
+          failed_jobs=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
+            --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')
+          cat > "$RUNNER_TEMP/issue-body.md" <<__BODY__
+          ## Agent run failed
+
+          - **Run:** [$RUN_ID]($RUN_URL)
+          - **Trigger:** $RUN_EVENT
+          - **Failed job(s):** ${failed_jobs:-<unknown>}
+
+          An Agent workflow run did not complete successfully. Check the run
+          log at the link above for the failing step.
+          __BODY__
+          sed -i 's/^  //' "$RUNNER_TEMP/issue-body.md"
+          gh issue create --repo "$REPO" --title "$TITLE" \
+            --body-file "$RUNNER_TEMP/issue-body.md"
