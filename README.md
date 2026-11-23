@@ -8,7 +8,8 @@ Python using only the standard library.
 - Agentic tool-use loop: the model can call tools, see their results, and continue.
 - Built-in tools: safe arithmetic evaluation (`calculate`) and current UTC time (`now_utc`).
 - Pluggable tool registry for adding your own tools.
-- Interactive chat CLI with conversation reset.
+- Built-in web fetching (`fetch_url`) with SSRF protection against private/non-public hosts.
+- Three interfaces: interactive chat CLI, headless one-shot mode, and an HTTP API server.
 
 ## Install
 
@@ -27,6 +28,34 @@ python -m foxnaught --max-steps 12  # tool steps allowed per turn
 ```
 
 In the chat, type `exit` to quit or `/reset` to clear the conversation.
+
+### Headless one-shot mode
+
+```bash
+python -m foxnaught --one-shot "What is 6 * 7?"
+```
+
+### HTTP API server
+
+```bash
+python -m foxnaught --serve --host 0.0.0.0 --port 8080
+```
+
+Endpoints:
+
+- `GET /health` → `{"status": "ok"}`
+- `POST /chat` with `{"message": "...", "reset": false}` → `{"reply": "..."}`
+
+### Docker
+
+```bash
+docker build -t foxnaught .
+docker run -p 8080:8080 -e MISTRAL_API_KEY="your-key" foxnaught
+curl -s localhost:8080/health
+curl -s -X POST localhost:8080/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "What is the current UTC time?"}'
+```
 
 ## Adding a tool
 
@@ -71,4 +100,7 @@ python -m unittest discover -s tests
 - `foxnaught/client.py` — Mistral chat-completions client (stdlib `urllib`)
 - `foxnaught/tools.py` — tool registry and JSON-schema tool definitions
 - `foxnaught/builtins.py` — built-in tools
-- `foxnaught/__main__.py` — CLI entry point
+- `foxnaught/web.py` — web-fetch tool with SSRF protection (stdlib `urllib`)
+- `foxnaught/server.py` — HTTP API (stdlib `http.server`)
+- `foxnaught/__main__.py` — CLI entry point (chat, one-shot, serve)
+- `Dockerfile` — container image for the HTTP server
