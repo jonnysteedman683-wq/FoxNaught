@@ -11,7 +11,7 @@ from typing import Any
 from .client import Message, MistralClient
 from .tools import ToolRegistry
 
-DEFAULT_MAX_STEPS = 8
+DEFAULT_MAX_STEPS = 16
 DEFAULT_HISTORY_LIMIT = 20
 DEFAULT_HISTORY_CHAR_BUDGET = 50_000
 ARCHIVE_LINE_CAP = 2_000

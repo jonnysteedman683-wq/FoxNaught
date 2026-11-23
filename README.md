@@ -116,6 +116,7 @@ curl -s -X POST localhost:8080/chat \
   Trigger it manually from the Actions tab with:
   - **prompt** — what the agent should do (default: review the repo and write `REPORT.md`)
   - **continue_from** — `previous` (default) resumes the last run's conversation via the `agent-memory` artifact; `fresh` starts clean
+  - **max_steps** — maximum tool steps per turn (default 16; raise it for prompts that need to read a lot of the repo)
   - **commit_report** — opt-in commit of `REPORT.md` back to `main`
   Both `REPORT.md` and the conversation memory are uploaded as run artifacts.
   The workflow is scheduled daily at 06:00 UTC (GitHub may delay scheduled runs
