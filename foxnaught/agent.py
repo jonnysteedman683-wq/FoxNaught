@@ -12,6 +12,7 @@ from .tools import ToolRegistry
 
 DEFAULT_MAX_STEPS = 8
 DEFAULT_HISTORY_LIMIT = 20
+DEFAULT_HISTORY_CHAR_BUDGET = 50_000
 
 SYSTEM_PROMPT = (
     "You are FoxNaught, a helpful assistant. Use the available tools when they "
@@ -29,6 +30,7 @@ class Agent:
         max_steps: int = DEFAULT_MAX_STEPS,
         on_step: Callable[[str, object], None] | None = None,
         history_limit: int | None = DEFAULT_HISTORY_LIMIT,
+        history_char_budget: int | None = DEFAULT_HISTORY_CHAR_BUDGET,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -36,6 +38,7 @@ class Agent:
         self.max_steps = max_steps
         self.on_step = on_step
         self.history_limit = history_limit
+        self.history_char_budget = history_char_budget
         self.history: list[Message] = [Message(role="system", content=system_prompt)]
 
     def reset(self) -> None:
@@ -59,14 +62,35 @@ class Agent:
         )
 
     def _trim_history(self) -> None:
-        """Keep the system prompt plus the most recent history_limit messages."""
-        limit = self.history_limit
-        if limit is None or len(self.history) <= limit:
-            return
-        keep = self.history[-(limit - 1):]
-        while keep and keep[0].role == "tool":
-            keep.pop(0)
-        self.history = [self.history[0], *keep]
+        """Keep the system prompt plus recent history within count and char limits."""
+        while True:
+            over_count = self.history_limit is not None and len(self.history) > self.history_limit
+            over_chars = (
+                self.history_char_budget is not None
+                and self._history_chars() > self.history_char_budget
+            )
+            if not (over_count or over_chars) or len(self.history) <= 2:
+                break
+            self._drop_oldest()
+        while len(self.history) > 1 and self.history[1].role == "tool":
+            self.history.pop(1)
+
+    def _history_chars(self) -> int:
+        total = 0
+        for message in self.history:
+            total += len(message.content or "") + 16
+            if message.tool_calls:
+                total += sum(len(json.dumps(call)) for call in message.tool_calls)
+        return total
+
+    def _drop_oldest(self) -> None:
+        dropped = self.history.pop(1)
+        if dropped.tool_calls:
+            drop_ids = {
+                call.get("id") for call in dropped.tool_calls if call.get("id")
+            }
+            kept = [m for m in self.history[1:] if m.role != "tool" or m.tool_call_id not in drop_ids]
+            self.history = [self.history[0], *kept]
 
     def run_turn_stream(
         self,

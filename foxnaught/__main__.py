@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from .agent import DEFAULT_HISTORY_LIMIT, DEFAULT_MAX_STEPS, Agent, load_history, save_history
+from .agent import DEFAULT_HISTORY_CHAR_BUDGET, DEFAULT_HISTORY_LIMIT, DEFAULT_MAX_STEPS, Agent, load_history, save_history
 from .builtins import register_defaults
 from .client import MistralClient, MistralError
 from .files import register_files
@@ -24,7 +24,13 @@ def build_registry(base_dir: str) -> ToolRegistry:
     return registry
 
 
-def build_agent(model: str | None, max_steps: int, base_dir: str, history_limit: int) -> Agent:
+def build_agent(
+    model: str | None,
+    max_steps: int,
+    base_dir: str,
+    history_limit: int,
+    history_char_budget: int,
+) -> Agent:
     client = MistralClient(model=model)
 
     def on_step(name: str, arguments: object) -> None:
@@ -36,6 +42,7 @@ def build_agent(model: str | None, max_steps: int, base_dir: str, history_limit:
         max_steps=max_steps,
         on_step=on_step,
         history_limit=history_limit,
+        history_char_budget=history_char_budget,
     )
 
 
@@ -139,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_HISTORY_LIMIT,
         help="keep only this many conversation messages before each turn (0 disables)",
     )
+    parser.add_argument(
+        "--history-char-budget",
+        type=int,
+        default=DEFAULT_HISTORY_CHAR_BUDGET,
+        help="drop oldest messages until the history fits this many characters (0 disables)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -147,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             args.max_steps,
             base_dir=os.getcwd(),
             history_limit=args.history_limit or None,
+            history_char_budget=args.history_char_budget or None,
         )
     except MistralError as exc:
         print(f"error: {exc}", file=sys.stderr)

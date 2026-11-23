@@ -23,6 +23,11 @@ No dependencies to install. Requires Python 3.10+ and a Mistral API key.
 export MISTRAL_API_KEY="your-key"
 ```
 
+The default model is `mistral-small-latest`; change it with `--model` or the
+`MISTRAL_MODEL` environment variable. For local use of the GitHub tools,
+install the [gh CLI](https://cli.github.com/) and authenticate (`gh auth login`)
+or set `GH_TOKEN` to a token with repository access.
+
 ## Usage
 
 ```bash
@@ -64,7 +69,10 @@ Endpoints:
 
 ```bash
 docker build -t foxnaught .
-docker run -p 8080:8080 -e MISTRAL_API_KEY="your-key" foxnaught
+docker run -p 8080:8080 -e MISTRAL_API_KEY="your-key" \
+  -v "$PWD/agent-memory.json:/app/agent-memory.json" \
+  foxnaught python -m foxnaught --serve --host 0.0.0.0 --port 8080 \
+    --memory /app/agent-memory.json
 curl -s localhost:8080/health
 curl -s -X POST localhost:8080/chat \
   -H 'Content-Type: application/json' \
@@ -105,6 +113,38 @@ one issue per distinct problem. Issue creation requires the workflow job's
 
 Required repository secret: `MISTRAL_API_KEY` (Settings → Secrets and variables → Actions).
 Without it, agent runs fail with a clear error message.
+
+## Tool catalog
+
+| Tool | Purpose | Requirements | Notes |
+|---|---|---|---|
+| `calculate` | Safe arithmetic evaluation | — | Rejects anything non-mathematical |
+| `now_utc` | Current UTC time, ISO-8601 | — | UTC only |
+| `fetch_url` | Fetch a public web page as text | network | SSRF-protected; blocks private/loopback/reserved hosts |
+| `read_file` | Read a text file | — | Relative to the working directory; 64 KB cap |
+| `write_file` | Create/overwrite a text file | — | Confined to the working directory; 256 KB cap |
+| `list_files` | List a directory | — | Confined to the working directory |
+| `list_issues` | List repository issues | `gh` + `GH_TOKEN` | Backed by GitHub CLI |
+| `search_issues` | Search existing issues | `gh` + `GH_TOKEN` | Call before `create_issue` |
+| `create_issue` | File a repository issue | `gh` + `GH_TOKEN` | 200-char title, 20 K-char body caps |
+
+Tool execution is visible as `[tool] name(arguments)` lines in CLI and workflow logs.
+
+## Memory file format
+
+The `--memory FILE` file is a JSON array of message objects:
+
+```json
+[
+  {"role": "system", "content": "You are FoxNaught..."},
+  {"role": "user", "content": "What is 6 * 7?"},
+  {"role": "assistant", "content": "42"}
+]
+```
+
+Messages also carry `tool_calls` / `tool_call_id` when tools were used, matching
+the Mistral chat-completions wire format. Files are written atomically, so a
+crash mid-write cannot corrupt them.
 
 ## Adding a tool
 
