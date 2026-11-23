@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -46,11 +47,14 @@ class MistralError(RuntimeError):
 
 
 class MistralClient:
+    RETRY_DELAYS = (1.0, 2.0)
+
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
+        retries_on_rate_limit: bool = True,
     ) -> None:
         self.api_key = api_key or os.environ.get("MISTRAL_API_KEY")
         if not self.api_key:
@@ -59,6 +63,7 @@ class MistralClient:
             )
         self.model = model or os.environ.get("MISTRAL_MODEL", DEFAULT_MODEL)
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        self.retries_on_rate_limit = retries_on_rate_limit
 
     def chat(
         self,
@@ -81,15 +86,32 @@ class MistralClient:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise MistralError(f"HTTP {exc.code} from Mistral API: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise MistralError(f"could not reach the Mistral API: {exc.reason}") from exc
 
+        attempts = 1 + (len(self.RETRY_DELAYS) if self.retries_on_rate_limit else 0)
+        body: dict[str, Any] = {}
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(self.RETRY_DELAYS[attempt - 1])
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                if (
+                    exc.code == 429
+                    and self.retries_on_rate_limit
+                    and attempt < len(self.RETRY_DELAYS)
+                ):
+                    continue
+                raise MistralError(f"HTTP {exc.code} from Mistral API: {detail}") from exc
+            except urllib.error.URLError as exc:
+                raise MistralError(f"could not reach the Mistral API: {exc.reason}") from exc
+
+        return self._parse_response(body)
+
+    @staticmethod
+    def _parse_response(body: dict[str, Any]) -> ChatResponse:
         choices = body.get("choices") or []
         if not choices:
             raise MistralError(f"unexpected API response: {body}")

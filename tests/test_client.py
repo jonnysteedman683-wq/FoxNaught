@@ -80,6 +80,59 @@ class MistralClientTest(unittest.TestCase):
             with self.assertRaises(MistralError):
                 self.client.chat([Message(role="user", content="hello")])
 
+    def test_rate_limit_is_retried_then_succeeds(self) -> None:
+        rate_limited = urllib.error.HTTPError(
+            "u", 429, "Too Many Requests", {}, mock.MagicMock()
+        )
+        rate_limited.read = mock.MagicMock(return_value=b'{"code": 1300}')
+        body = json.dumps(
+            {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        ).encode()
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=[rate_limited, make_response(body)]) as urlopen,
+            mock.patch("foxnaught.client.time.sleep") as sleep,
+        ):
+            result = self.client.chat([Message(role="user", content="hello")])
+        self.assertEqual(result.message.content, "ok")
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(1.0)
+
+    def test_rate_limit_exhausts_retries(self) -> None:
+        rate_limited = urllib.error.HTTPError(
+            "u", 429, "Too Many Requests", {}, mock.MagicMock()
+        )
+        rate_limited.read = mock.MagicMock(return_value=b'{"code": 1300}')
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=[rate_limited] * 3) as urlopen,
+            mock.patch("foxnaught.client.time.sleep") as sleep,
+        ):
+            with self.assertRaises(MistralError) as ctx:
+                self.client.chat([Message(role="user", content="hello")])
+        self.assertIn("429", str(ctx.exception))
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_retries_can_be_disabled(self) -> None:
+        rate_limited = urllib.error.HTTPError(
+            "u", 429, "Too Many Requests", {}, mock.MagicMock()
+        )
+        rate_limited.read = mock.MagicMock(return_value=b'{"code": 1300}')
+        client = MistralClient(api_key="test-key", retries_on_rate_limit=False)
+        with mock.patch("urllib.request.urlopen", side_effect=[rate_limited]) as urlopen:
+            with self.assertRaises(MistralError):
+                client.chat([Message(role="user", content="hello")])
+        self.assertEqual(urlopen.call_count, 1)
+
+    def test_other_http_errors_are_not_retried(self) -> None:
+        unauthorised = urllib.error.HTTPError(
+            "u", 401, "Unauthorized", {}, mock.MagicMock()
+        )
+        unauthorised.read = mock.MagicMock(return_value=b'"bad key"')
+        with mock.patch("urllib.request.urlopen", side_effect=[unauthorised]) as urlopen:
+            with self.assertRaises(MistralError):
+                self.client.chat([Message(role="user", content="hello")])
+        self.assertEqual(urlopen.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
