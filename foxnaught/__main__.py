@@ -94,10 +94,10 @@ def load_memory(agent: Agent, memory: str | None) -> None:
         load_history(agent, memory)
 
 
-def serve(agent: Agent, host: str, port: int) -> None:
+def serve(agent: Agent, host: str, port: int, memory: str | None) -> None:
     from .server import make_server
 
-    server = make_server(agent, host=host, port=port)
+    server = make_server(agent, host=host, port=port, memory_path=memory)
     print(f"FoxNaught agent listening on http://{host}:{server.server_address[1]}")
     try:
         server.serve_forever()
@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     if args.serve:
-        serve(agent, args.host, args.port)
+        serve(agent, args.host, args.port, memory=args.memory)
         return 0
     chat(agent, memory=args.memory, stream=args.stream)
     return 0

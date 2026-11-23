@@ -64,6 +64,12 @@ Endpoints:
 
 - `GET /health` → `{"status": "ok"}`
 - `POST /chat` with `{"message": "...", "reset": false}` → `{"reply": "..."}`
+- `POST /chat` with `"stream": true` → server-sent events: `data: {"delta": ...}` per
+  reply fragment, a final `data: {"reply": "..."}`, then `data: [DONE]`; errors
+  arrive as `data: {"error": "..."}`
+
+With `--serve --memory FILE` the server persists the conversation after every
+request (optionally `"reset": true` to wipe it), so restarts keep their memory.
 
 ### Docker
 
