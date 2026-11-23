@@ -7,8 +7,11 @@ Python using only the standard library.
 
 - Agentic tool-use loop: the model can call tools, see their results, and continue.
 - Built-in tools: safe arithmetic evaluation (`calculate`) and current UTC time (`now_utc`).
+- Streaming replies (`--stream`) via SSE deltas from the Mistral API.
+- Persistent conversation memory (`--memory FILE`) that survives between one-shot runs.
 - Pluggable tool registry for adding your own tools.
 - Built-in web fetching (`fetch_url`) with SSRF protection against private/non-public hosts.
+- Sandboxed file tools (`read_file`, `write_file`, `list_files`) confined to the working directory.
 - Three interfaces: interactive chat CLI, headless one-shot mode, and an HTTP API server.
 
 ## Install
@@ -34,6 +37,16 @@ In the chat, type `exit` to quit or `/reset` to clear the conversation.
 ```bash
 python -m foxnaught --one-shot "What is 6 * 7?"
 ```
+
+With streaming and persistent memory:
+
+```bash
+python -m foxnaught --stream --memory foxnaught-history.json --one-shot "Hello again!"
+```
+
+The memory file stores the full conversation as JSON; a new run resumes the
+previous conversation (including tool results). Delete the file or `/reset` to
+start fresh.
 
 ### HTTP API server
 
@@ -62,7 +75,9 @@ curl -s -X POST localhost:8080/chat \
 - **CI** (`.github/workflows/ci.yml`): runs the test suite on every push to `main` and pull request.
 - **Agent** (`.github/workflows/agent.yml`): runs the agent headlessly via `--one-shot`.
   Trigger it manually from the Actions tab with a prompt and optional model, or enable
-  the commented-out `schedule` block in the workflow for recurring runs.
+  the commented-out `schedule` block in the workflow for recurring runs. The
+  conversation history is saved as the `agent-memory` run artifact, so the agent
+  can build on previous runs when you re-attach it.
 
 Required repository secret: `MISTRAL_API_KEY` (Settings → Secrets and variables → Actions).
 Without it, agent runs fail with a clear error message.
@@ -111,6 +126,7 @@ python -m unittest discover -s tests
 - `foxnaught/tools.py` — tool registry and JSON-schema tool definitions
 - `foxnaught/builtins.py` — built-in tools
 - `foxnaught/web.py` — web-fetch tool with SSRF protection (stdlib `urllib`)
+- `foxnaught/files.py` — sandboxed file tools (locked to the working directory)
 - `foxnaught/server.py` — HTTP API (stdlib `http.server`)
 - `foxnaught/__main__.py` — CLI entry point (chat, one-shot, serve)
 - `Dockerfile` — container image for the HTTP server

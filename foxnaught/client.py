@@ -7,6 +7,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +43,20 @@ class ChatResponse:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class StreamEvent:
+    delta: dict[str, Any]
+    finish_reason: str | None = None
+
+    @property
+    def content(self) -> str | None:
+        return self.delta.get("content")
+
+    @property
+    def tool_calls(self) -> list[dict[str, Any]]:
+        return self.delta.get("tool_calls") or []
+
+
 class MistralError(RuntimeError):
     """Raised when the API call fails."""
 
@@ -70,14 +85,60 @@ class MistralClient:
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ChatResponse:
+        request = self._build_request(messages, tools)
+        response = self._open_with_retries(request)
+        try:
+            body = json.loads(response.read().decode("utf-8"))
+        finally:
+            response.close()
+        return self._parse_response(body)
+
+    def chat_stream(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Iterator[StreamEvent]:
+        """Yield StreamEvent chunks from a server-sent-events completion."""
+        request = self._build_request(messages, tools, stream=True)
+        response = self._open_with_retries(request)
+        try:
+            for raw_line in response:
+                line = raw_line.decode("utf-8").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    return
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    raise MistralError(f"invalid SSE chunk: {data!r}") from exc
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                yield StreamEvent(
+                    delta=choice.get("delta") or {},
+                    finish_reason=choice.get("finish_reason"),
+                )
+        finally:
+            response.close()
+
+    def _build_request(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        stream: bool = False,
+    ) -> urllib.request.Request:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [message.to_dict() for message in messages],
         }
         if tools:
             payload["tools"] = tools
-
-        request = urllib.request.Request(
+        if stream:
+            payload["stream"] = True
+        return urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
@@ -87,28 +148,23 @@ class MistralClient:
             method="POST",
         )
 
+    def _open_with_retries(self, request: urllib.request.Request) -> Any:
         attempts = 1 + (len(self.RETRY_DELAYS) if self.retries_on_rate_limit else 0)
-        body: dict[str, Any] = {}
+        last_rate_limit: urllib.error.HTTPError | None = None
         for attempt in range(attempts):
             if attempt:
                 time.sleep(self.RETRY_DELAYS[attempt - 1])
             try:
-                with urllib.request.urlopen(request, timeout=60) as response:
-                    body = json.loads(response.read().decode("utf-8"))
-                break
+                return urllib.request.urlopen(request, timeout=120)
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
-                if (
-                    exc.code == 429
-                    and self.retries_on_rate_limit
-                    and attempt < len(self.RETRY_DELAYS)
-                ):
+                if exc.code == 429 and self.retries_on_rate_limit and attempt < len(self.RETRY_DELAYS):
+                    last_rate_limit = exc
                     continue
                 raise MistralError(f"HTTP {exc.code} from Mistral API: {detail}") from exc
             except urllib.error.URLError as exc:
                 raise MistralError(f"could not reach the Mistral API: {exc.reason}") from exc
-
-        return self._parse_response(body)
+        raise MistralError("rate limit retries exhausted", ) from last_rate_limit
 
     @staticmethod
     def _parse_response(body: dict[str, Any]) -> ChatResponse:
