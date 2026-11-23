@@ -21,7 +21,6 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   live-test:
-    if: ${{ secrets.MISTRAL_API_KEY != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: test
@@ -33,4 +32,9 @@ jobs:
       - name: Live smoke tests
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-        run: python -m unittest tests.test_live -v
+        run: |
+          if [ -z "${MISTRAL_API_KEY:-}" ]; then
+            echo "MISTRAL_API_KEY not set; skipping live tests"
+            exit 0
+          fi
+          python -m unittest tests.test_live -v
