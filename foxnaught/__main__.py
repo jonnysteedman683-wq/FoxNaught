@@ -94,10 +94,10 @@ def load_memory(agent: Agent, memory: str | None) -> None:
         load_history(agent, memory)
 
 
-def serve(agent: Agent, host: str, port: int, memory: str | None) -> None:
+def serve(agent: Agent, host: str, port: int, memory: str | None, auth_token: str | None) -> None:
     from .server import make_server
 
-    server = make_server(agent, host=host, port=port, memory_path=memory)
+    server = make_server(agent, host=host, port=port, memory_path=memory, auth_token=auth_token)
     print(f"FoxNaught agent listening on http://{host}:{server.server_address[1]}")
     try:
         server.serve_forever()
@@ -152,6 +152,14 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_HISTORY_CHAR_BUDGET,
         help="drop oldest messages until the history fits this many characters (0 disables)",
     )
+    parser.add_argument(
+        "--auth-token",
+        default=None,
+        help=(
+            "require this bearer token to POST /chat (recommended when binding "
+            "publicly); falls back to the FOXNAUGHT_AUTH_TOKEN environment variable"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -179,7 +187,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     if args.serve:
-        serve(agent, args.host, args.port, memory=args.memory)
+        serve(
+            agent,
+            args.host,
+            args.port,
+            memory=args.memory,
+            auth_token=args.auth_token or os.environ.get("FOXNAUGHT_AUTH_TOKEN"),
+        )
         return 0
     chat(agent, memory=args.memory, stream=args.stream)
     return 0

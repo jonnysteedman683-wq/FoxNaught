@@ -106,6 +106,65 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 404)
 
 
+class AuthTest(unittest.TestCase):
+    def start_protected(self) -> tuple[str, ThreadingHTTPServer]:
+        server = make_server(
+            make_agent(), host="127.0.0.1", port=0, auth_token="s3cret"
+        )
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return base, server
+
+    def chat(self, base: str, token: str | None):
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(
+            base + "/chat",
+            data=json.dumps({"message": "hi"}).encode(),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def test_missing_token_rejected(self) -> None:
+        base, _ = self.start_protected()
+        status, payload = self.chat(base, None)
+        self.assertEqual(status, 401)
+        self.assertIn("bearer", payload["error"])
+
+    def test_wrong_token_rejected(self) -> None:
+        base, _ = self.start_protected()
+        status, _ = self.chat(base, "wrong")
+        self.assertEqual(status, 401)
+
+    def test_correct_token_accepted(self) -> None:
+        base, _ = self.start_protected()
+        status, payload = self.chat(base, "s3cret")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"reply": "ok"})
+
+    def test_health_stays_open(self) -> None:
+        base, _ = self.start_protected()
+        with urllib.request.urlopen(base + "/health", timeout=5) as response:
+            self.assertEqual(response.status, 200)
+
+    def test_open_when_token_not_configured(self) -> None:
+        server = make_server(make_agent(), host="127.0.0.1", port=0, auth_token=None)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        status, _ = self.chat(base, None)
+        self.assertEqual(status, 200)
+
+
 class AgentStateTest(unittest.TestCase):
     def test_reset_then_chat(self) -> None:
         agent = make_agent(responses=["one", "two"])

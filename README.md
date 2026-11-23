@@ -71,16 +71,34 @@ Endpoints:
 With `--serve --memory FILE` the server persists the conversation after every
 request (optionally `"reset": true` to wipe it), so restarts keep their memory.
 
+### Authentication
+
+`POST /chat` can require a bearer token. Pass it via `--auth-token` (or the
+`FOXNAUGHT_AUTH_TOKEN` environment variable); `/health` stays open in either
+case. When no token is configured the server is unauthenticated — do not bind
+it publicly in this mode.
+
+```bash
+python -m foxnaught --serve --host 0.0.0.0 \
+  --auth-token "$(openssl rand -hex 32)"
+curl -s -X POST localhost:8080/chat \
+  -H "Authorization: Bearer $FOXNAUGHT_AUTH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "hi"}'
+```
+
 ### Docker
 
 ```bash
 docker build -t foxnaught .
-docker run -p 8080:8080 -e MISTRAL_API_KEY="your-key" \
+docker run -p 8080:8080 \
+  -e MISTRAL_API_KEY="your-key" \
+  -e FOXNAUGHT_AUTH_TOKEN="shared-secret-here" \
   -v "$PWD/agent-memory.json:/app/agent-memory.json" \
-  foxnaught python -m foxnaught --serve --host 0.0.0.0 --port 8080 \
-    --memory /app/agent-memory.json
+  foxnaught
 curl -s localhost:8080/health
 curl -s -X POST localhost:8080/chat \
+  -H "Authorization: Bearer shared-secret-here" \
   -H 'Content-Type: application/json' \
   -d '{"message": "What is the current UTC time?"}'
 ```

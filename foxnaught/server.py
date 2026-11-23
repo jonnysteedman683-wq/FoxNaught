@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import threading
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from .agent import Agent, load_history, save_history
 from .client import MistralError
 
 MAX_BODY_BYTES = 64_000
+AUTH_ENV_VAR = "FOXNAUGHT_AUTH_TOKEN"
 
 
 class AgentState:
@@ -51,7 +53,7 @@ class AgentState:
             return reply
 
 
-def make_handler(state: AgentState) -> type[BaseHTTPRequestHandler]:
+def make_handler(state: AgentState, auth_token: str | None = None) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "FoxNaught/0.1"
 
@@ -64,6 +66,9 @@ def make_handler(state: AgentState) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             if self.path != "/chat":
                 self._send_json(404, {"error": "not found"})
+                return
+            if auth_token is not None and not self._authorized(auth_token):
+                self._send_json(401, {"error": "unauthorized: missing or invalid bearer token"})
                 return
             try:
                 request = self._read_json()
@@ -102,6 +107,12 @@ def make_handler(state: AgentState) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
 
+        def _authorized(self, expected: str) -> bool:
+            header = self.headers.get("Authorization") or ""
+            if not header.startswith("Bearer "):
+                return False
+            return hmac.compare_digest(header[7:], expected)
+
         def _send_sse(self, payload: dict) -> None:
             self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
             self.wfile.flush()
@@ -139,9 +150,11 @@ def make_server(
     host: str = "127.0.0.1",
     port: int = 0,
     memory_path: str | None = None,
+    auth_token: str | None = None,
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer(
-        (host, port), make_handler(AgentState(agent, memory_path=memory_path))
+        (host, port),
+        make_handler(AgentState(agent, memory_path=memory_path), auth_token=auth_token),
     )
     server.daemon_threads = True
     return server
