@@ -1,0 +1,42 @@
+name: Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Prompt to send to the agent"
+        required: true
+        default: "What is 6 * 7? Use the calculate tool."
+      model:
+        description: "Mistral model (optional)"
+        required: false
+        default: ""
+  schedule:
+    # Disabled by default to avoid recurring API usage.
+    # To enable, remove the leading '#' characters below. Runs daily at 06:00 UTC.
+    # - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-run
+  cancel-in-progress: false
+
+env:
+  MISTRAL_MODEL: ${{ inputs.model || 'mistral-small-latest' }}
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run agent
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          AGENT_PROMPT: ${{ inputs.prompt || 'Review the repo state in one sentence.' }}
+        run: python -m foxnaught --model "$MISTRAL_MODEL" --one-shot "$AGENT_PROMPT"
