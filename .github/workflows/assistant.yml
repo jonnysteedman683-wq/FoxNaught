@@ -1,0 +1,83 @@
+name: Assistant
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Task for the assistant"
+        required: true
+        default: "Check the status of the most recent Agent run."
+
+permissions:
+  contents: read
+
+concurrency:
+  group: assistant-run
+  cancel-in-progress: false
+
+jobs:
+  assist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/foxnaught') && !startsWith(github.event.comment.user.login, 'github-actions') && !startsWith(github.event.comment.user.login, 'foxnaught-agent')) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore previous conversation memory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow assistant.yml --status success \
+            --json databaseId --limit 20 \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }})][0].databaseId // empty")
+          if [ -n "$previous_id" ]; then
+            echo "Restoring memory from previous run $previous_id"
+            gh run download "$previous_id" -n assistant-memory || echo "(no memory artifact; starting fresh)"
+          else
+            echo "No previous successful run found; starting fresh"
+          fi
+      - name: Run assistant
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_PROMPT: ${{ inputs.prompt }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_LOGIN: ${{ github.event.comment.user.login }}
+          ISSUE_COMMENT_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          system='You are the FoxNaught Assistant, an on-call helper for this repository. You can dispatch workflows with dispatch_workflow, inspect runs with list_workflow_runs and view_run, and manage issues. When a request asks you to kick off, check, or re-run a workflow, use those tools rather than guessing; report exactly what you did and any run ids. Keep replies short.'
+          if [ "$GITHUB_EVENT_NAME" = "issue_comment" ]; then
+            task="Issue #$ISSUE_COMMENT_NUMBER comment by @$COMMENT_LOGIN: $COMMENT_BODY"
+          else
+            task="$DISPATCH_PROMPT"
+          fi
+          python -m foxnaught --memory assistant-memory.json --memory-archive ASSISTANT_MEMORY.md --system-prompt "$system" --one-shot "$task" > assistant-log.txt
+          cat assistant-log.txt
+      - name: Reply on the issue
+        if: ${{ github.event_name == 'issue_comment' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_COMMENT_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          {
+            printf '<!-- foxnaught-assistant -->\n'
+            cat assistant-log.txt
+          } > comment.md
+          gh issue comment "$ISSUE_COMMENT_NUMBER" --body-file comment.md
+      - name: Upload conversation memory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-memory
+          path: |
+            assistant-memory.json
+            ASSISTANT_MEMORY.md
+          if-no-files-found: ignore

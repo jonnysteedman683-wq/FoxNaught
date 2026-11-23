@@ -9,6 +9,9 @@ Python using only the standard library.
 - Built-in tools: safe arithmetic evaluation (`calculate`) and current UTC time (`now_utc`).
 - Streaming replies (`--stream`) via SSE deltas from the Mistral API.
 - Persistent conversation memory (`--memory FILE`) that survives between one-shot runs.
+- GitHub integration: issue tools, workflow dispatch/run-inspection tools, and a
+  `/foxnaught` comment-triggered Assistant workflow.
+- Distinct agent roles via `--system-prompt` (one codebase, many agents).
 - Pluggable tool registry for adding your own tools.
 - Built-in web fetching (`fetch_url`) with SSRF protection against private/non-public hosts.
 - Sandboxed file tools (`read_file`, `write_file`, `list_files`) confined to the working directory.
@@ -117,13 +120,22 @@ curl -s -X POST localhost:8080/chat \
   Both `REPORT.md` and the conversation memory are uploaded as run artifacts.
   The workflow is scheduled daily at 06:00 UTC (GitHub may delay scheduled runs
   by up to an hour on low-traffic repositories).
-- **Watchdog** (`.github/workflows/watchdog.yml`): two guards.
-  `workflow_run` triggers on any failed Agent run and opens a GitHub issue
-  titled `Agent run <id> failed` with the run link and failed job names
-  (deduplicated per run). A daily 08:00 UTC schedule check files an
-  `Agent missed its daily schedule (<date>)` issue when no Agent run has
-  fired in the last 26 hours — GitHub sometimes silently skips scheduled
-  runs on low-activity repositories, and this catches it the next morning.
+- **Assistant** (`.github/workflows/assistant.yml`): a second, distinct agent
+  specialised in operating workflows. Two triggers:
+  - comment `/foxnaught <task>` on any issue (e.g. `/foxnaught check the last Agent run and re-run it if it failed`) — it interprets the task, uses `dispatch_workflow` / `list_workflow_runs` / `view_run`, and replies on the thread with its transcript
+  - manual dispatch with a **prompt** input from the Actions tab
+  It has its own conversation memory (`assistant-memory` artifact), a
+  dedicated system prompt (see `--system-prompt`), and comments made by bots
+  do not re-trigger it. Requires `MISTRAL_API_KEY`; the `actions: write`
+  permission is what lets it trigger workflows.
+- **Watchdog** (`.github/workflows/watchdog.yml`): two guards covering both
+  agents. The `workflow_run` trigger fires on any failed Agent or Assistant
+  run and opens an issue titled `<Workflow> run <id> failed` with the run
+  link and failed job names (deduplicated per run). A daily 08:00 UTC
+  schedule check files an `Agent missed its daily schedule (<date>)` issue
+  when no Agent run has fired in the last 26 hours — GitHub sometimes
+  silently skips scheduled runs on low-activity repositories, and this
+  catches it the next morning.
 
 HTTP 429 responses are retried with backoff (1 s, then 2 s) with ±50 % jitter
 so many clients retrying in sync do not create a thundering herd.
@@ -174,6 +186,9 @@ Without it, agent runs fail with a clear error message.
 | `list_issues` | List repository issues | `gh` + `GH_TOKEN` | Backed by GitHub CLI |
 | `search_issues` | Search existing issues | `gh` + `GH_TOKEN` | Call before `create_issue` |
 | `create_issue` | File a repository issue | `gh` + `GH_TOKEN` | 200-char title, 20 K-char body caps |
+| `dispatch_workflow` | Trigger a workflow with a `workflow_dispatch` trigger | `gh` + `GH_TOKEN` (+ `actions: write` in CI) | Input names validated; 8 inputs, 2 K-char values |
+| `list_workflow_runs` | List recent runs of a workflow | `gh` + `GH_TOKEN` | 1–50 runs |
+| `view_run` | Status, conclusion, and per-job summary of one run | `gh` + `GH_TOKEN` | Use with `list_workflow_runs` |
 
 Tool execution is visible as `[tool] name(arguments)` lines in CLI and workflow logs.
 
