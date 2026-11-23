@@ -1,13 +1,9 @@
 name: Agent
 
-# For recurring runs, add a schedule trigger, e.g.:
-#
-#   schedule:
-#     - cron: "0 6 * * *"
-#
-# It is intentionally omitted so recurring API usage is opt-in.
-
 on:
+  schedule:
+    # Daily at 06:00 UTC
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       prompt:
