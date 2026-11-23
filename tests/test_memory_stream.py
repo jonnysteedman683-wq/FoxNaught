@@ -43,7 +43,48 @@ class HistoryTrimTest(unittest.TestCase):
         self.assertEqual(agent.history[0].role, "system")
         self.assertEqual(agent.history[-1].content, "reply 9")
 
-    def test_trim_drops_leading_tool_orphans(self) -> None:
+    def test_limit_can_be_disabled(self) -> None:
+        agent = make_agent()
+        agent.history_limit = None
+        agent.history_char_budget = None
+        self.fill(agent, 6)
+        self.assertEqual(len(agent.history), 13)
+
+    def test_char_budget_trims_longest_context(self) -> None:
+        from foxnaught.client import ChatResponse
+
+        agent = make_agent()
+        agent.history_limit = None
+        agent.history_char_budget = 200
+        side = [
+            ChatResponse(message=Message(role="assistant", content="x" * 90))
+            for _ in range(5)
+        ]
+        agent.client.chat.side_effect = side
+        for i in range(5):
+            agent.run_turn(f"question {i} " + "y" * 40)
+        self.assertEqual(len(agent.history), 2)
+        self.assertEqual(agent.history[0].role, "system")
+        self.assertEqual([m.role for m in agent.history[1:]][0], "assistant")
+        self.assertFalse(any(m.role == "tool" for m in agent.history[1:]))
+        self.assertLess(agent._history_chars(), 50_000)
+
+    def test_char_budget_can_be_disabled(self) -> None:
+        from foxnaught.client import ChatResponse
+
+        agent = make_agent()
+        agent.history_limit = None
+        agent.history_char_budget = None
+        side = [
+            ChatResponse(message=Message(role="assistant", content="x" * 900))
+            for _ in range(3)
+        ]
+        agent.client.chat.side_effect = side
+        for i in range(3):
+            agent.run_turn(f"q{i}")
+        self.assertEqual(len(agent.history), 7)
+
+    def test_dropping_tool_pair_keeps_history_valid(self) -> None:
         agent = make_agent()
         agent.history_limit = 4
         agent.history.append(Message(role="user", content="q1"))
@@ -60,12 +101,7 @@ class HistoryTrimTest(unittest.TestCase):
         agent.history.append(Message(role="assistant", content="r2"))
         agent._trim_history()
         self.assertEqual([m.role for m in agent.history], ["system", "assistant", "user", "assistant"])
-
-    def test_limit_can_be_disabled(self) -> None:
-        agent = make_agent()
-        agent.history_limit = None
-        self.fill(agent, 6)
-        self.assertEqual(len(agent.history), 13)
+        self.assertNotIn("tool", [m.role for m in agent.history])
 
 
 class StreamingAgentTest(unittest.TestCase):
