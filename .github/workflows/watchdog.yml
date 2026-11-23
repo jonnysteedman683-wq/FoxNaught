@@ -4,6 +4,9 @@ on:
   workflow_run:
     workflows: ["Agent"]
     types: [completed]
+  schedule:
+    # Daily at 08:00 UTC — after the Agent cron and its worst-case delay
+    - cron: "0 8 * * *"
 
 permissions:
   actions: read
@@ -13,7 +16,7 @@ jobs:
   report-failure:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' }}
     steps:
       - name: File an issue for the failed Agent run
         env:
@@ -41,6 +44,47 @@ jobs:
 
           An Agent workflow run did not complete successfully. Check the run
           log at the link above for the failing step.
+          __BODY__
+          sed -i 's/^  //' "$RUNNER_TEMP/issue-body.md"
+          gh issue create --repo "$REPO" --title "$TITLE" \
+            --body-file "$RUNNER_TEMP/issue-body.md"
+
+  report-missed-schedule:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ github.event_name == 'schedule' }}
+    steps:
+      - name: File an issue when the daily Agent run is missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          cutoff=$(date -u -d '26 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
+          latest=$(gh run list --repo "$REPO" --workflow agent.yml --limit 1 \
+            --json createdAt --jq '.[0].createdAt // empty') || latest=""
+          if [ -n "$latest" ] && [[ "$latest" > "$cutoff" ]]; then
+            echo "Latest Agent run $latest is within the last 26 hours; schedule healthy"
+            exit 0
+          fi
+          today=$(date -u '+%Y-%m-%d')
+          TITLE="Agent missed its daily schedule ($today)"
+          existing=$(gh issue list --repo "$REPO" --state open \
+            --search "Agent missed its daily schedule in:title" --json number --jq 'length')
+          if [ "$existing" != "0" ]; then
+            echo "An open missed-schedule issue already exists; skipping"
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/issue-body.md" <<__BODY__
+          ## Daily Agent schedule missed
+
+          The scheduled 06:00 UTC Agent run did not fire: the most recent Agent
+          run ([created $latest](${{ github.server_url }}/$REPO/actions/workflows/agent.yml))
+          is older than the 26-hour freshness window.
+
+          This usually means GitHub's scheduler silently skipped the run — a
+          known issue on low-activity repositories. It recovers on its own
+          after 1–2 missed runs, or you can dispatch the Agent workflow
+          manually from the Actions tab.
           __BODY__
           sed -i 's/^  //' "$RUNNER_TEMP/issue-body.md"
           gh issue create --repo "$REPO" --title "$TITLE" \

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from .client import Message, MistralClient
@@ -14,6 +15,7 @@ DEFAULT_MAX_STEPS = 8
 DEFAULT_HISTORY_LIMIT = 20
 DEFAULT_HISTORY_CHAR_BUDGET = 50_000
 ARCHIVE_LINE_CAP = 2_000
+DEFAULT_ARCHIVE_MAX_CHARS = 100_000
 ARCHIVE_NOTE = (
     "\n\nOlder conversation turns are archived at {path}; use the read_file tool "
     "to consult that archive when details from earlier in the project matter."
@@ -37,6 +39,7 @@ class Agent:
         history_limit: int | None = DEFAULT_HISTORY_LIMIT,
         history_char_budget: int | None = DEFAULT_HISTORY_CHAR_BUDGET,
         memory_archive_path: str | None = None,
+        memory_archive_max_chars: int | None = DEFAULT_ARCHIVE_MAX_CHARS,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -44,6 +47,7 @@ class Agent:
             system_prompt += ARCHIVE_NOTE.format(path=memory_archive_path)
         self.system_prompt = system_prompt
         self.memory_archive_path = memory_archive_path
+        self.memory_archive_max_chars = memory_archive_max_chars
         self.max_steps = max_steps
         self.on_step = on_step
         self.history_limit = history_limit
@@ -85,7 +89,11 @@ class Agent:
         while len(self.history) > 1 and self.history[1].role == "tool":
             dropped.append(self.history.pop(1))
         if archive and dropped and self.memory_archive_path:
-            archive_messages(self.memory_archive_path, dropped)
+            archive_messages(
+                self.memory_archive_path,
+                dropped,
+                max_chars=self.memory_archive_max_chars,
+            )
 
     def _history_chars(self) -> int:
         total = 0
@@ -189,7 +197,11 @@ class Agent:
             )
         )
 
-def archive_messages(path: str, messages: list[Message]) -> None:
+def archive_messages(
+    path: str,
+    messages: list[Message],
+    max_chars: int | None = DEFAULT_ARCHIVE_MAX_CHARS,
+) -> None:
     """Append trimmed conversation messages to a markdown archive file."""
     parent = os.path.dirname(path)
     if parent:
@@ -215,6 +227,29 @@ def archive_messages(path: str, messages: list[Message]) -> None:
     header = "" if os.path.exists(path) else "# Conversation memory archive\n\n"
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(header + "\n".join(lines) + "\n")
+    if max_chars is not None:
+        compact_archive(path, max_chars)
+
+
+def compact_archive(path: str, max_chars: int) -> None:
+    """Keep only the most recent archive lines when the file exceeds max_chars."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as fh:
+        content = fh.read()
+    if len(content) <= max_chars:
+        return
+    cut = len(content) - max_chars
+    newline = content.find("\n", cut)
+    keep_from = newline + 1 if newline != -1 else len(content)
+    note = (
+        f"\n_(older entries were pruned to stay under {max_chars} characters "
+        f"on {datetime.now(timezone.utc).date()})_\n"
+    )
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        fh.write("# Conversation memory archive\n\n" + note + "\n" + content[keep_from:])
+    os.replace(tmp_path, path)
 
 
 def save_history(agent: Agent, path: str) -> None:

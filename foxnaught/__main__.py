@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from .agent import DEFAULT_HISTORY_CHAR_BUDGET, DEFAULT_HISTORY_LIMIT, DEFAULT_MAX_STEPS, Agent, load_history, save_history
+from .agent import DEFAULT_ARCHIVE_MAX_CHARS, DEFAULT_HISTORY_CHAR_BUDGET, DEFAULT_HISTORY_LIMIT, DEFAULT_MAX_STEPS, Agent, load_history, save_history
 from .builtins import register_defaults
 from .client import MistralClient, MistralError
 from .files import register_files
@@ -31,6 +31,7 @@ def build_agent(
     history_limit: int,
     history_char_budget: int,
     memory_archive_path: str | None = None,
+    memory_archive_max_chars: int | None = None,
 ) -> Agent:
     client = MistralClient(model=model)
 
@@ -45,6 +46,7 @@ def build_agent(
         history_limit=history_limit,
         history_char_budget=history_char_budget,
         memory_archive_path=memory_archive_path,
+        memory_archive_max_chars=memory_archive_max_chars,
     )
 
 
@@ -164,6 +166,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--archive-max-chars",
+        type=int,
+        default=DEFAULT_ARCHIVE_MAX_CHARS,
+        help=(
+            "when the memory archive exceeds this many characters, prune the "
+            "oldest entries (0 disables pruning)"
+        ),
+    )
+    parser.add_argument(
         "--auth-token",
         default=None,
         help=(
@@ -181,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             history_limit=args.history_limit or None,
             history_char_budget=args.history_char_budget or None,
             memory_archive_path=args.memory_archive,
+            memory_archive_max_chars=args.archive_max_chars or None,
         )
     except MistralError as exc:
         print(f"error: {exc}", file=sys.stderr)
