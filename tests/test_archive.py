@@ -12,6 +12,7 @@ from foxnaught.agent import (
     SYSTEM_PROMPT,
     Agent,
     archive_messages,
+    compact_archive,
     load_history,
     save_history,
 )
@@ -24,7 +25,7 @@ def make_agent(archive_path: str | None) -> Agent:
     registry = ToolRegistry()
     register_defaults(registry)
     client = mock.create_autospec(MistralClient, instance=True)
-    return Agent(client, registry, memory_archive_path=archive_path)
+    return Agent(client, registry, memory_archive_path=archive_path, memory_archive_max_chars=None)
 
 
 class ArchiveTest(unittest.TestCase):
@@ -113,6 +114,46 @@ class ArchiveTest(unittest.TestCase):
         with open(nested, encoding="utf-8") as fh:
             content = fh.read()
         self.assertIn("- user: hello there", content)
+
+    def test_archive_compacts_when_over_max_chars(self) -> None:
+        archive_messages(
+            self.archive,
+            [Message(role="user", content=f"entry {i} " + "y" * 100) for i in range(60)],
+            max_chars=100_000,
+        )
+        archive_messages(
+            self.archive,
+            [Message(role="user", content="final entry " + "z" * 100)],
+            max_chars=1000,
+        )
+        with open(self.archive, encoding="utf-8") as fh:
+            content = fh.read()
+        self.assertIn("older entries were pruned", content)
+        self.assertIn("- user: final entry", content)
+        self.assertNotIn("entry 0", content)
+        self.assertLess(len(content), 2000)
+
+    def test_compact_archive_ignores_small_files(self) -> None:
+        archive_messages(self.archive, [Message(role="user", content="small")])
+        compact_archive(self.archive, 100_000)
+        with open(self.archive, encoding="utf-8") as fh:
+            content = fh.read()
+        self.assertIn("- user: small", content)
+        self.assertNotIn("pruned", content)
+
+    def test_agent_uses_configured_compaction_limit(self) -> None:
+        agent = make_agent(self.archive)
+        agent.memory_archive_max_chars = 500
+        agent.history_limit = 3
+        side = [
+            ChatResponse(message=Message(role="assistant", content="r" * 100))
+            for _ in range(8)
+        ]
+        agent.client.chat.side_effect = side
+        for i in range(8):
+            agent.run_turn(f"question {i} " + "w" * 80)
+        with open(self.archive, encoding="utf-8") as fh:
+            self.assertLess(len(fh.read()), 1000)
 
     def test_load_history_trims_without_duplicating_stable_archive(self) -> None:
         agent = make_agent(self.archive)

@@ -117,9 +117,13 @@ curl -s -X POST localhost:8080/chat \
   Both `REPORT.md` and the conversation memory are uploaded as run artifacts.
   The workflow is scheduled daily at 06:00 UTC (GitHub may delay scheduled runs
   by up to an hour on low-traffic repositories).
-- **Watchdog** (`.github/workflows/watchdog.yml`): triggers whenever an Agent
-  run fails and opens a GitHub issue titled `Agent run <id> failed` with the
-  run link and failed job names (one issue per failed run, deduplicated).
+- **Watchdog** (`.github/workflows/watchdog.yml`): two guards.
+  `workflow_run` triggers on any failed Agent run and opens a GitHub issue
+  titled `Agent run <id> failed` with the run link and failed job names
+  (deduplicated per run). A daily 08:00 UTC schedule check files an
+  `Agent missed its daily schedule (<date>)` issue when no Agent run has
+  fired in the last 26 hours — GitHub sometimes silently skips scheduled
+  runs on low-activity repositories, and this catches it the next morning.
 
 HTTP 429 responses are retried with backoff (1 s, then 2 s) with ±50 % jitter
 so many clients retrying in sync do not create a thundering herd.
@@ -132,7 +136,10 @@ window; the system prompt is always kept.
 markdown file. When set, the system prompt gains a note telling the agent the
 archive exists so it can `read_file` past turns that left the context window.
 The Agent workflow passes `--memory-archive MEMORY.md` and ships the archive
-inside the `agent-memory` artifact so it accumulates across daily runs.
+inside the `agent-memory` artifact so it accumulates across daily runs. When
+the archive exceeds `--archive-max-chars` (default 100,000, `0` disables), the
+oldest entries are pruned with an inline note; per-message content is capped
+at 2,000 characters.
 
 **Live integration tests**: `tests/test_live.py` performs real API round trips
 (tool call, streaming, and memory) and runs automatically in the `live-test` CI
