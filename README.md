@@ -74,7 +74,7 @@ curl -s -X POST localhost:8080/chat \
 ### GitHub Actions
 
 - **CI** (`.github/workflows/ci.yml`): runs the test suite on every push to `main` and pull request.
-- **Agent** (`.github/workflows/agent.yml`): runs the agent headlessly via `--one-shot`.
+- **Agent** (`.github/workflows/agent.yml`): runs daily at 06:00 UTC and on manual dispatch.
   Trigger it manually from the Actions tab with:
   - **prompt** — what the agent should do (default: review the repo and write `REPORT.md`)
   - **continue_from** — `previous` (default) resumes the last run's conversation via the `agent-memory` artifact; `fresh` starts clean
@@ -85,6 +85,10 @@ curl -s -X POST localhost:8080/chat \
 Conversation history is trimmed to the most recent messages (default 20, see
 `--history-limit`) so long-running memories cannot exceed the model's context
 window; the system prompt is always kept.
+
+**Live integration tests**: `tests/test_live.py` performs real API round trips
+(tool call, streaming, and memory) and runs automatically in the `live-test` CI
+job when `MISTRAL_API_KEY` is set; without the secret they are skipped.
 
 ### GitHub tools
 
