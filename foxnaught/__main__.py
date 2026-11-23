@@ -10,6 +10,7 @@ from .agent import DEFAULT_HISTORY_LIMIT, DEFAULT_MAX_STEPS, Agent, load_history
 from .builtins import register_defaults
 from .client import MistralClient, MistralError
 from .files import register_files
+from .gh import register_github
 from .tools import ToolRegistry
 from .web import register_web
 
@@ -19,6 +20,7 @@ def build_registry(base_dir: str) -> ToolRegistry:
     register_defaults(registry)
     register_web(registry)
     register_files(registry, base_dir)
+    register_github(registry)
     return registry
 
 
