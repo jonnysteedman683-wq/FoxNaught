@@ -27,7 +27,7 @@ jobs:
           RUN_EVENT: ${{ github.event.workflow_run.event }}
           RUN_NAME: ${{ github.event.workflow_run.name }}
         run: |
-          TITLE="Agent run $RUN_ID failed"
+          TITLE="$RUN_NAME run $RUN_ID failed"
           existing=$(gh issue list --repo "$REPO" --state open \
             --search "$TITLE in:title" --json number --jq 'length')
           if [ "$existing" != "0" ]; then
@@ -37,14 +37,14 @@ jobs:
           failed_jobs=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
             --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')
           cat > "$RUNNER_TEMP/issue-body.md" <<__BODY__
-          ## Agent run failed
+          ## $RUN_NAME run failed
 
           - **Run:** [$RUN_ID]($RUN_URL)
           - **Trigger:** $RUN_EVENT
           - **Failed job(s):** ${failed_jobs:-<unknown>}
 
-          An Agent workflow run did not complete successfully. Check the run
-          log at the link above for the failing step.
+          A $RUN_NAME workflow run did not complete successfully. Check the
+          run log at the link above for the failing step.
           __BODY__
           sed -i 's/^  //' "$RUNNER_TEMP/issue-body.md"
           gh issue create --repo "$REPO" --title "$TITLE" \
