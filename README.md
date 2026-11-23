@@ -12,6 +12,7 @@ Python using only the standard library.
 - Pluggable tool registry for adding your own tools.
 - Built-in web fetching (`fetch_url`) with SSRF protection against private/non-public hosts.
 - Sandboxed file tools (`read_file`, `write_file`, `list_files`) confined to the working directory.
+- GitHub tools (`list_issues`, `search_issues`, `create_issue`) backed by the `gh` CLI, with duplicate-issue avoidance baked into the tool guidance.
 - Three interfaces: interactive chat CLI, headless one-shot mode, and an HTTP API server.
 
 ## Install
@@ -85,6 +86,19 @@ Conversation history is trimmed to the most recent messages (default 20, see
 `--history-limit`) so long-running memories cannot exceed the model's context
 window; the system prompt is always kept.
 
+### GitHub tools
+
+With `gh` installed and `GH_TOKEN` set (the Agent workflow provides both), the
+agent can list, search, and create repository issues. Trigger the Agent
+workflow with a prompt like:
+
+> Review the repository, then create issues for any distinct problems you find
+> (search first to avoid duplicates; label them if useful).
+
+The `create_issue` tool is instructed to search for duplicates first and file
+one issue per distinct problem. Issue creation requires the workflow job's
+`issues: write` permission, already configured.
+
 Required repository secret: `MISTRAL_API_KEY` (Settings → Secrets and variables → Actions).
 Without it, agent runs fail with a clear error message.
 
@@ -133,6 +147,7 @@ python -m unittest discover -s tests
 - `foxnaught/builtins.py` — built-in tools
 - `foxnaught/web.py` — web-fetch tool with SSRF protection (stdlib `urllib`)
 - `foxnaught/files.py` — sandboxed file tools (locked to the working directory)
+- `foxnaught/gh.py` — GitHub tools via the `gh` CLI (needs `GH_TOKEN` and `gh` installed)
 - `foxnaught/server.py` — HTTP API (stdlib `http.server`)
 - `foxnaught/__main__.py` — CLI entry point (chat, one-shot, serve)
 - `Dockerfile` — container image for the HTTP server
