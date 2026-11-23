@@ -128,7 +128,11 @@ curl -s -X POST localhost:8080/chat \
   It has its own conversation memory (`assistant-memory` artifact), a
   dedicated system prompt (see `--system-prompt`), and comments made by bots
   do not re-trigger it. Requires `MISTRAL_API_KEY`; the `actions: write`
-  permission is what lets it trigger workflows.
+  permission is what lets it trigger workflows. Triggering is gated to the
+  repository owner, collaborators, or the logins in the
+  `ASSISTANT_ALLOWED_LOGINS` repository variable — see
+  [docs/grok-bot-integration.md](docs/grok-bot-integration.md) for wiring up
+  external bots like Grok.
 - **Watchdog** (`.github/workflows/watchdog.yml`): two guards covering both
   agents. The `workflow_run` trigger fires on any failed Agent or Assistant
   run and opens an issue titled `<Workflow> run <id> failed` with the run
