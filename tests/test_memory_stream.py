@@ -271,6 +271,48 @@ class StreamingAgentTest(unittest.TestCase):
         with self.assertRaisesRegex(MistralError, "boom"):
             agent.run_turn_stream("hi")
 
+    def test_stream_failure_rolls_back_history(self) -> None:
+        from foxnaught.client import MistralError
+
+        agent = make_agent()
+
+        def failing_stream(messages, tools=None):
+            raise MistralError("boom")
+            yield
+
+        agent.client.chat_stream.side_effect = failing_stream
+        with self.assertRaises(MistralError):
+            agent.run_turn_stream("hi")
+        self.assertEqual([m.role for m in agent.history], ["system"])
+
+    def test_stream_failure_mid_tool_turn_rolls_back_partial_history(self) -> None:
+        from foxnaught.client import MistralError
+
+        agent = make_agent()
+        agent.client.chat_stream.side_effect = [
+            events_from_chunks(
+                [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "now_utc", "arguments": None},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            ),
+            MistralError("boom"),
+        ]
+        with self.assertRaises(MistralError):
+            agent.run_turn_stream("hi")
+        self.assertEqual([m.role for m in agent.history], ["system"])
+
 
 class MemoryTest(unittest.TestCase):
     def test_save_and_load_round_trip(self) -> None:

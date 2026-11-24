@@ -28,6 +28,41 @@ def make_agent(responses: list[str] | None = None) -> Agent:
     return Agent(client, registry)
 
 
+class SlowClientTest(unittest.TestCase):
+    def start_fast_timeout_server(self) -> tuple[str, int]:
+        handler = make_handler(AgentState(make_agent()))
+
+        class FastTimeout(handler):
+            timeout = 1
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FastTimeout)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return "127.0.0.1", server.server_address[1]
+
+    def test_stalled_request_line_closes_connection(self) -> None:
+        import socket
+
+        host, port = self.start_fast_timeout_server()
+        with socket.create_connection((host, port), timeout=5) as sock:
+            sock.sendall(b"POST /chat HTTP/1.1\r\nContent-Type: application/json")
+            sock.settimeout(5)
+            self.assertEqual(sock.recv(1024), b"")
+
+    def test_slow_body_returns_400(self) -> None:
+        import socket
+
+        host, port = self.start_fast_timeout_server()
+        with socket.create_connection((host, port), timeout=5) as sock:
+            sock.sendall(b"POST /chat HTTP/1.1\r\nContent-Length: 4\r\n\r\n")
+            sock.settimeout(5)
+            response = sock.recv(2048).decode()
+        self.assertIn("400", response)
+        self.assertIn("timed out reading request body", response)
+
+
 class ServerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.servers: list[ThreadingHTTPServer] = []

@@ -120,20 +120,25 @@ class Agent:
         """Process one user message, running any tool calls, and reply."""
         self.runs += 1
         self._refresh_system_prompt()
+        checkpoint = len(self.history)
         self.history.append(Message(role="user", content=user_input))
-        for _ in range(self.max_steps):
-            response = self.client.chat(self.history, self.registry.schemas())
-            message = response.message
-            if not message.tool_calls:
+        try:
+            for _ in range(self.max_steps):
+                response = self.client.chat(self.history, self.registry.schemas())
+                message = response.message
+                if not message.tool_calls:
+                    self.history.append(message)
+                    self._trim_history(archive=True)
+                    return message.content or ""
                 self.history.append(message)
-                self._trim_history(archive=True)
-                return message.content or ""
-            self.history.append(message)
-            for call in message.tool_calls:
-                self._execute_call(call)
-        raise RuntimeError(
-            f"agent exceeded {self.max_steps} tool steps without producing a reply"
-        )
+                for call in message.tool_calls:
+                    self._execute_call(call)
+            raise RuntimeError(
+                f"agent exceeded {self.max_steps} tool steps without producing a reply"
+            )
+        except Exception:
+            del self.history[checkpoint:]
+            raise
 
     def _trim_history(self, archive: bool = False) -> None:
         """Keep the system prompt plus recent history within count and char limits."""
@@ -188,34 +193,39 @@ class Agent:
         """Like run_turn, but streams reply deltas via on_delta as they arrive."""
         self.runs += 1
         self._refresh_system_prompt()
+        checkpoint = len(self.history)
         self.history.append(Message(role="user", content=user_input))
         schemas = self.registry.schemas()
-        for _ in range(self.max_steps):
-            content_parts: list[str] = []
-            tool_acc: dict[int, dict[str, Any]] = {}
-            for event in self.client.chat_stream(self.history, schemas):
-                delta = event.delta
-                piece = delta.get("content")
-                if piece and on_delta is not None:
-                    on_delta(piece)
-                if piece:
-                    content_parts.append(piece)
-                for partial in delta.get("tool_calls") or []:
-                    self._merge_partial_tool_call(tool_acc, partial)
-            message = Message(
-                role="assistant",
-                content="".join(content_parts) or None,
-                tool_calls=list(tool_acc.values()) or None,
+        try:
+            for _ in range(self.max_steps):
+                content_parts: list[str] = []
+                tool_acc: dict[int, dict[str, Any]] = {}
+                for event in self.client.chat_stream(self.history, schemas):
+                    delta = event.delta
+                    piece = delta.get("content")
+                    if piece and on_delta is not None:
+                        on_delta(piece)
+                    if piece:
+                        content_parts.append(piece)
+                    for partial in delta.get("tool_calls") or []:
+                        self._merge_partial_tool_call(tool_acc, partial)
+                message = Message(
+                    role="assistant",
+                    content="".join(content_parts) or None,
+                    tool_calls=list(tool_acc.values()) or None,
+                )
+                self.history.append(message)
+                if not message.tool_calls:
+                    self._trim_history(archive=True)
+                    return message.content or ""
+                for call in message.tool_calls:
+                    self._execute_call(call)
+            raise RuntimeError(
+                f"agent exceeded {self.max_steps} tool steps without producing a reply"
             )
-            self.history.append(message)
-            if not message.tool_calls:
-                self._trim_history(archive=True)
-                return message.content or ""
-            for call in message.tool_calls:
-                self._execute_call(call)
-        raise RuntimeError(
-            f"agent exceeded {self.max_steps} tool steps without producing a reply"
-        )
+        except Exception:
+            del self.history[checkpoint:]
+            raise
 
     @staticmethod
     def _merge_partial_tool_call(

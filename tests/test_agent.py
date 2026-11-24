@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 from foxnaught.agent import Agent
 from foxnaught.builtins import calculate, now_utc, register_defaults
-from foxnaught.client import ChatResponse, Message, MistralClient
+from foxnaught.client import ChatResponse, Message, MistralClient, MistralError
 from foxnaught.tools import ToolRegistry
 
 
@@ -33,6 +34,28 @@ class ToolRegistryTest(unittest.TestCase):
         registry = ToolRegistry()
         registry.register("boom", "Always fails.", {"type": "object", "properties": {}}, boom)
         self.assertTrue(registry.run("boom", None).startswith("Error:"))
+
+    def test_run_serialises_nonscalar_results(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            "stats",
+            "Return a dict.",
+            {"type": "object", "properties": {}},
+            lambda: {"ok": True},
+        )
+        self.assertEqual(registry.run("stats", None), '{"ok": true}')
+
+    def test_run_surfaces_unserialisable_results_as_error(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            "returns_datetime",
+            "Return a datetime.",
+            {"type": "object", "properties": {}},
+            lambda: datetime.now(timezone.utc),
+        )
+        self.assertTrue(
+            registry.run("returns_datetime", None).startswith("Error: TypeError:")
+        )
 
     def test_run_rejects_unknown_tool(self) -> None:
         registry = ToolRegistry()
@@ -156,6 +179,43 @@ class AgentTest(unittest.TestCase):
         agent.max_steps = 3
         with self.assertRaises(RuntimeError):
             agent.run_turn("loop")
+        self.assertEqual([m.role for m in agent.history], ["system"])
+
+    def test_failed_turn_rolls_back_history(self) -> None:
+        agent = self.make_agent([])
+        agent.client.chat.side_effect = MistralError("boom")
+        with self.assertRaises(MistralError):
+            agent.run_turn("hi")
+        self.assertEqual([m.role for m in agent.history], ["system"])
+
+    def test_failure_mid_tool_turn_rolls_back_partial_history(self) -> None:
+        tool_call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "now_utc", "arguments": None},
+        }
+        agent = self.make_agent(
+            [ChatResponse(message=Message(role="assistant", content=None, tool_calls=[tool_call]))]
+        )
+        agent.client.chat.side_effect = [
+            ChatResponse(message=Message(role="assistant", content=None, tool_calls=[tool_call])),
+            MistralError("boom"),
+        ]
+        with self.assertRaises(MistralError):
+            agent.run_turn("hi")
+        self.assertEqual([m.role for m in agent.history], ["system"])
+
+    def test_recovery_after_failed_turn(self) -> None:
+        agent = self.make_agent([])
+        agent.client.chat.side_effect = [
+            MistralError("boom"),
+            ChatResponse(message=Message(role="assistant", content="ok")),
+        ]
+        with self.assertRaises(MistralError):
+            agent.run_turn("first")
+        self.assertEqual(agent.run_turn("second"), "ok")
+        self.assertEqual([m.role for m in agent.history], ["system", "user", "assistant"])
+        self.assertEqual(agent.history[1].content, "second")
 
     def test_reset_restores_system_prompt_only(self) -> None:
         responses = [ChatResponse(message=Message(role="assistant", content="ok"))]
