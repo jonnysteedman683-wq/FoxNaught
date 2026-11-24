@@ -59,6 +59,46 @@ class MainTest(unittest.TestCase):
         self.assertEqual(result, 0)
         make_server.assert_called_once()
 
+    def test_serve_and_one_shot_are_mutually_exclusive(self) -> None:
+        with (
+            mock.patch("foxnaught.__main__.MistralClient"),
+            mock.patch("foxnaught.__main__.Agent"),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                main(argv=["--one-shot", "hi", "--serve"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_serve_warns_when_binding_publicly_without_token(self) -> None:
+        with (
+            mock.patch("foxnaught.__main__.MistralClient"),
+            mock.patch("foxnaught.__main__.Agent"),
+            mock.patch("foxnaught.server.make_server") as make_server,
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch("sys.stderr") as stderr,
+        ):
+            make_server.return_value.server_address = ("0.0.0.0", 8080)
+            make_server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            result = main(argv=["--serve", "--host", "0.0.0.0", "--port", "0"])
+        self.assertEqual(result, 0)
+        warning = " ".join(
+            str(call) for call in stderr.write.call_args_list
+        )
+        self.assertIn("unauthenticated", warning)
+
+    def test_serve_silent_on_loopback_without_token(self) -> None:
+        with (
+            mock.patch("foxnaught.__main__.MistralClient"),
+            mock.patch("foxnaught.__main__.Agent"),
+            mock.patch("foxnaught.server.make_server") as make_server,
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch("sys.stderr") as stderr,
+        ):
+            make_server.return_value.server_address = ("127.0.0.1", 8080)
+            make_server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            result = main(argv=["--serve"])
+        self.assertEqual(result, 0)
+        stderr.write.assert_not_called()
+
 
 class LoadMemoryTest(unittest.TestCase):
     def test_load_memory_noop_when_missing(self) -> None:

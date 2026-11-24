@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as html_module
 import http.client
 import ipaddress
 import re
@@ -19,7 +20,7 @@ REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _TAG_RE = re.compile(r"<(?:script|style)\b[^>]*>.*?</(?:script|style)>", re.DOTALL | re.IGNORECASE)
 _STRIP_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"[ \t]*\n[ \t\n]*")
-_CHARSET_RE = re.compile(r"charset=([^;\s]+)", re.IGNORECASE)
+_CHARSET_RE = re.compile(r"(?:^|;)\s*charset=([^;\s]+)", re.IGNORECASE)
 
 
 class DisallowedHostError(ValueError):
@@ -111,7 +112,7 @@ def _follow_redirects(url: str, max_bytes: int) -> tuple[str, bytes]:
                 response.read(max_bytes)
                 url = urllib.parse.urljoin(url, location)
                 continue
-            if response.status >= 400:
+            if response.status >= 300:
                 raise FetchHTTPError(f"HTTP {response.status} {response.reason}")
             return content_type, response.read(max_bytes)
         finally:
@@ -129,8 +130,8 @@ def _charset(content_type: str) -> str:
 def _extract_text(html: str) -> str:
     html = _TAG_RE.sub(" ", html)
     html = _STRIP_RE.sub("\n", html)
-    html = html.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'")
-    return _WHITESPACE_RE.sub("\n", html).strip()
+    text = html_module.unescape(html).replace("\xa0", " ")
+    return _WHITESPACE_RE.sub("\n", text).strip()
 
 
 def fetch_url(url: str, max_chars: int = MAX_CHARS) -> str:
@@ -141,7 +142,7 @@ def fetch_url(url: str, max_chars: int = MAX_CHARS) -> str:
         content_type, body = _follow_redirects(url, MAX_BYTES)
     except DisallowedHostError as exc:
         return f"Error: {exc}"
-    except (FetchHTTPError, http.client.HTTPException, OSError) as exc:
+    except (FetchHTTPError, http.client.HTTPException, OSError, ValueError) as exc:
         return f"Error: fetch failed: {exc}"
     try:
         text = body.decode(_charset(content_type), errors="replace")

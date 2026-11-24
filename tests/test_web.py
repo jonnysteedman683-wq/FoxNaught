@@ -56,6 +56,40 @@ class FetchUrlTest(unittest.TestCase):
         self.assertEqual(request.args[1], "/page?q=1")
         self.assertEqual(request.kwargs["headers"]["Host"], "example.com")
 
+    def test_rejects_out_of_range_port(self) -> None:
+        with mock.patch("socket.getaddrinfo", return_value=PUBLIC_ADDR):
+            self.assertTrue(
+                fetch_url("https://example.com:99999/").startswith("Error: fetch failed")
+            )
+
+    def test_rejects_redirect_without_location(self) -> None:
+        with (
+            mock.patch("socket.getaddrinfo", return_value=PUBLIC_ADDR),
+            mock.patch(
+                "foxnaught.web._open_pinned",
+                return_value=fake_connection(fake_response(status=302)),
+            ),
+        ):
+            self.assertTrue(
+                fetch_url("https://example.com/redirect").startswith(
+                    "Error: fetch failed: HTTP 302"
+                )
+            )
+
+    def test_rejects_non_success_non_redirect_status(self) -> None:
+        with (
+            mock.patch("socket.getaddrinfo", return_value=PUBLIC_ADDR),
+            mock.patch(
+                "foxnaught.web._open_pinned",
+                return_value=fake_connection(fake_response(status=304)),
+            ),
+        ):
+            self.assertTrue(
+                fetch_url("https://example.com/conditional").startswith(
+                    "Error: fetch failed: HTTP 304"
+                )
+            )
+
     def test_rejects_non_http_schemes(self) -> None:
         self.assertTrue(fetch_url("ftp://example.com/file").startswith("Error:"))
         self.assertTrue(fetch_url("file:///etc/passwd").startswith("Error:"))
@@ -173,6 +207,7 @@ class FetchUrlTest(unittest.TestCase):
         self.assertIn("café", result)
         self.assertEqual(_charset('text/html; charset="iso-8859-1"'), "iso-8859-1")
         self.assertEqual(_charset("text/html"), "utf-8")
+        self.assertEqual(_charset("text/html; xcharset=utf-16"), "utf-8")
 
     def test_strips_html_tags(self) -> None:
         html = "<html><head><style>.a{}</style></head><body><h1>Hi</h1><p>there</p><script>bad()</script></body></html>"
@@ -181,6 +216,11 @@ class FetchUrlTest(unittest.TestCase):
         self.assertNotIn("bad()", text)
         self.assertIn("Hi", text)
         self.assertIn("there", text)
+
+    def test_decodes_entities_once(self) -> None:
+        self.assertEqual(_extract_text("&amp;lt;"), "&lt;")
+        self.assertEqual(_extract_text("&#60;p&amp;gt&#62;"), "<p&gt>")
+        self.assertEqual(_extract_text("a&nbsp;b"), "a b")
 
     def test_registered_in_registry(self) -> None:
         registry = ToolRegistry()

@@ -319,24 +319,30 @@ class MemoryTest(unittest.TestCase):
         agent = make_agent()
         agent.history.append(Message(role="user", content="remember this"))
         agent.history.append(Message(role="assistant", content="cached"))
-        save_history(agent, "/tmp/foxnaught-test-memory.json")
-        fresh = make_agent()
-        self.assertNotIn("remember this", str(fresh.history))
-        load_history(fresh, "/tmp/foxnaught-test-memory.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "memory.json")
+            save_history(agent, path)
+            fresh = make_agent()
+            self.assertNotIn("remember this", str(fresh.history))
+            load_history(fresh, path)
         self.assertEqual(fresh.history[-1].content, "cached")
         self.assertEqual(fresh.history[0].role, "system")
 
     def test_missing_file_is_ignored_by_cli_helper_but_raises_directly(self) -> None:
         agent = make_agent()
-        with self.assertRaises(FileNotFoundError):
-            load_history(agent, "/tmp/does-not-exist-foxnaught.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "does-not-exist.json")
+            with self.assertRaises(FileNotFoundError):
+                load_history(agent, path)
 
     def test_invalid_history_file_raises_value_error(self) -> None:
         agent = make_agent()
-        with open("/tmp/foxnaught-bad-history.json", "w") as fh:
-            fh.write('{"not": "a list"}')
-        with self.assertRaises(ValueError):
-            load_history(agent, "/tmp/foxnaught-bad-history.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bad-history.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('{"not": "a list"}')
+            with self.assertRaises(ValueError):
+                load_history(agent, path)
 
     def test_history_without_system_prompt_gets_one(self) -> None:
         agent = make_agent()
