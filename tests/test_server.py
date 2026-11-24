@@ -58,7 +58,16 @@ class SlowClientTest(unittest.TestCase):
         with socket.create_connection((host, port), timeout=5) as sock:
             sock.sendall(b"POST /chat HTTP/1.1\r\nContent-Length: 4\r\n\r\n")
             sock.settimeout(5)
-            response = sock.recv(2048).decode()
+            response = b""
+            try:
+                while True:
+                    chunk = sock.recv(2048)
+                    if not chunk:
+                        break
+                    response += chunk
+            except socket.timeout:
+                self.fail("server did not answer a stalled body read with a 400")
+        response = response.decode()
         self.assertIn("400", response)
         self.assertIn("timed out reading request body", response)
 
