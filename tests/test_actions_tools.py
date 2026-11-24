@@ -101,6 +101,15 @@ class DispatchWorkflowTest(unittest.TestCase):
             )
         gh.assert_not_called()
 
+    def test_rejects_invalid_ref_characters(self) -> None:
+        invalid_refs = ["ref/with/slash", "ref:colon", "ref with spaces", "ref@at"]
+        for ref in invalid_refs:
+            with mock.patch("foxnaught.actions.run_gh", return_value="") as gh:
+                result = dispatch_workflow("agent.yml", ref)
+                self.assertTrue(result.startswith("Error:"))
+                self.assertIn("alphanumeric", result)
+            gh.assert_not_called()
+
     def test_rejects_non_object_inputs(self) -> None:
         with mock.patch("foxnaught.actions.run_gh", return_value="") as gh:
             result = dispatch_workflow("agent.yml", "main", inputs="prompt=x")
@@ -153,6 +162,12 @@ class ListRunsTest(unittest.TestCase):
             list_workflow_runs("ci.yml", limit=999)
         args = gh.call_args.args[0]
         self.assertEqual(args[args.index("--limit") + 1], "50")
+
+    def test_rejects_oversized_workflow_name(self) -> None:
+        with mock.patch("foxnaught.actions.run_gh", return_value="") as gh:
+            result = list_workflow_runs("w" * 101)
+            self.assertEqual(result, "Error: workflow name is too long")
+        gh.assert_not_called()
 
 
 class ViewRunTest(unittest.TestCase):

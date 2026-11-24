@@ -13,6 +13,8 @@ MAX_REF_CHARS = 200
 MAX_INPUTS = 8
 MAX_INPUT_VALUE_CHARS = 2_000
 INPUT_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+REF_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+WORKFLOW_FILE_RE = re.compile(r"\.(ya?ml|yml)$", re.IGNORECASE)
 
 
 def dispatch_workflow(
@@ -27,6 +29,8 @@ def dispatch_workflow(
         return "Error: ref must be a non-empty branch or tag name"
     if len(workflow) > MAX_WORKFLOW_CHARS or len(ref) > MAX_REF_CHARS:
         return "Error: workflow name or ref is too long"
+    if not REF_RE.match(ref):
+        return "Error: ref must contain only alphanumeric characters, dots, hyphens, and underscores"
     arguments = ["workflow", "run", workflow.strip(), "--ref", ref.strip()]
     clean_inputs: dict[str, str] = {}
     if inputs:
@@ -54,6 +58,8 @@ def list_workflow_runs(workflow: str, limit: int = 5) -> str:
     """List recent runs of a repository workflow."""
     if not isinstance(workflow, str) or not workflow.strip():
         return "Error: workflow must be a non-empty name, id, or filename"
+    if len(workflow) > MAX_WORKFLOW_CHARS:
+        return "Error: workflow name is too long"
     try:
         limit = max(1, min(int(limit), MAX_LIMIT))
     except (TypeError, ValueError):
