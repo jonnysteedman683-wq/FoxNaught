@@ -30,10 +30,17 @@ No dependencies to install. Requires Python 3.10+ and a Mistral API key.
 export MISTRAL_API_KEY="your-key"
 ```
 
-The default model is `mistral-small-latest`; change it with `--model` or the
-`MISTRAL_MODEL` environment variable. For local use of the GitHub tools,
-install the [gh CLI](https://cli.github.com/) and authenticate (`gh auth login`)
-or set `GH_TOKEN` to a token with repository access.
+### Model Configuration
+
+The default model is `mistral-small-latest`. You can customize it in several ways:
+
+- CLI flag: `--model mistral-large-latest`
+- Environment variable: `MISTRAL_MODEL=mistral-large-latest`
+- In code: `MistralClient(model="mistral-large-latest")`
+
+Available models: `mistral-tiny-latest`, `mistral-small-latest`, `mistral-medium-latest`, `mistral-large-latest`, and any custom model endpoints you have access to.
+
+For local use of the GitHub tools, install the [gh CLI](https://cli.github.com/) and authenticate (`gh auth login`) or set `GH_TOKEN` to a token with repository access.
 
 ## Usage
 
@@ -101,13 +108,40 @@ curl -s -X POST localhost:8080/chat \
 The image runs as a non-root user (`foxnaught`), so mount a directory rather
 than a single file if you want the container to rewrite the memory file.
 
+**Important:** For persistent memory across container restarts, mount the memory file:
+
 ```bash
 docker build -t foxnaught .
 docker run -p 8080:8080 \
   -e MISTRAL_API_KEY="your-key" \
   -e FOXNAUGHT_AUTH_TOKEN="shared-secret-here" \
+  -e MISTRAL_MODEL="mistral-small-latest" \
   -v "$PWD/agent-memory.json:/app/agent-memory.json" \
+  -v "$PWD/memory-archive:/app/memory-archive" \
   foxnaught
+```
+
+**Docker Compose example:**
+
+```yaml
+version: '3.8'
+services:
+  foxnaught:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY}
+      - FOXNAUGHT_AUTH_TOKEN=${FOXNAUGHT_AUTH_TOKEN}
+      - MISTRAL_MODEL=mistral-small-latest
+    volumes:
+      - ./agent-memory.json:/app/agent-memory.json
+      - ./memory-archive:/app/memory-archive
+    restart: unless-stopped
+```
+
+Verify with:
+```bash
 curl -s localhost:8080/health
 curl -s -X POST localhost:8080/chat \
   -H "Authorization: Bearer shared-secret-here" \
@@ -128,6 +162,10 @@ curl -s -X POST localhost:8080/chat \
   and distilled long-term memory) are uploaded as run artifacts.
   The workflow is scheduled daily at 06:00 UTC (GitHub may delay scheduled runs
   by up to an hour on low-traffic repositories).
+
+  **Required permissions:** `contents: read`, `contents: write` (for commit_report), `issues: write` (for create_issue tool)
+  **Required secrets:** `MISTRAL_API_KEY`
+
 - **Assistant** (`.github/workflows/assistant.yml`): a second, distinct agent
   specialised in operating workflows. Two triggers:
   - comment `/foxnaught <task>` on any issue (e.g. `/foxnaught check the last Agent run and re-run it if it failed`) — it interprets the task, uses `dispatch_workflow` / `list_workflow_runs` / `view_run`, and replies on the thread with its transcript
@@ -140,6 +178,11 @@ curl -s -X POST localhost:8080/chat \
   `ASSISTANT_ALLOWED_LOGINS` repository variable — see
   [docs/grok-bot-integration.md](docs/grok-bot-integration.md) for wiring up
   external bots like Grok.
+
+  **Required permissions:** `contents: read`, `issues: write`, `actions: write`
+  **Required secrets:** `MISTRAL_API_KEY`
+  **Optional variables:** `ASSISTANT_ALLOWED_LOGINS` (comma-separated list of GitHub logins)
+
 - **Watchdog** (`.github/workflows/watchdog.yml`): two guards covering both
   agents. The `workflow_run` trigger fires on any failed Agent or Assistant
   run and opens an issue titled `<Workflow> run <id> failed` with the run
@@ -148,6 +191,32 @@ curl -s -X POST localhost:8080/chat \
   when no Agent run has fired in the last 26 hours — GitHub sometimes
   silently skips scheduled runs on low-activity repositories, and this
   catches it the next morning.
+
+  **Required permissions:** `actions: read`, `issues: write`
+
+### GitHub Tool Permissions
+
+The GitHub tools (`list_issues`, `search_issues`, `create_issue`, `dispatch_workflow`, 
+`list_workflow_runs`, `view_run`) require specific permissions:
+
+| Tool | Required Permission | Required Secret/Variable |
+|---|---|---|
+| `list_issues` | `issues: read` | `GH_TOKEN` |
+| `search_issues` | `issues: read` | `GH_TOKEN` |
+| `create_issue` | `issues: write` | `GH_TOKEN` |
+| `dispatch_workflow` | `actions: write` | `GH_TOKEN` |
+| `list_workflow_runs` | `actions: read` | `GH_TOKEN` |
+| `view_run` | `actions: read` | `GH_TOKEN` |
+
+**Setup:**
+1. In your repository, go to **Settings > Secrets and variables > Actions**
+2. Add a **Repository Secret** named `MISTRAL_API_KEY` with your Mistral API key
+3. Add a **Repository Secret** named `GH_TOKEN` with a GitHub Personal Access Token (PAT)
+   - The PAT needs the permissions listed above based on which tools you use
+   - For full functionality, use: `repo`, `issues: write`, `actions: write`
+4. Optionally, add a **Repository Variable** named `ASSISTANT_ALLOWED_LOGINS` with comma-separated GitHub logins that can trigger the Assistant via comments
+
+**Note:** The `gh` CLI must be installed in your environment. The Agent and Assistant workflows include it via `actions/setup-python` and the pre-installed `gh` CLI in GitHub Actions runners.
 
 HTTP 429 responses are retried with backoff (1 s, then 2 s) with ±50 % jitter
 so many clients retrying in sync do not create a thundering herd.
@@ -203,19 +272,45 @@ Without it, agent runs fail with a clear error message.
 
 | Tool | Purpose | Requirements | Notes |
 |---|---|---|---|
-| `calculate` | Safe arithmetic evaluation | — | Rejects anything non-mathematical |
-| `now_utc` | Current UTC time, ISO-8601 | — | UTC only |
-| `fetch_url` | Fetch a public web page as text | network | SSRF-protected; blocks private/loopback/reserved hosts; redirects re-validated, connection pinned to the resolved IP |
-| `read_file` | Read a text file | — | Relative to the working directory; 64 KB cap |
-| `write_file` | Create/overwrite a text file | — | Confined to the working directory; 256 KB cap |
-| `list_files` | List a directory | — | Confined to the working directory |
-| `list_issues` | List repository issues | `gh` + `GH_TOKEN` | Backed by GitHub CLI |
-| `search_issues` | Search existing issues | `gh` + `GH_TOKEN` | Call before `create_issue` |
-| `create_issue` | File a repository issue | `gh` + `GH_TOKEN` | 200-char title, 20 K-char body caps |
-| `dispatch_workflow` | Trigger a workflow with a `workflow_dispatch` trigger | `gh` + `GH_TOKEN` (+ `actions: write` in CI) | Input names validated; 8 inputs, 2 K-char values |
-| `list_workflow_runs` | List recent runs of a workflow | `gh` + `GH_TOKEN` | 1–50 runs |
-| `view_run` | Status, conclusion, and per-job summary of one run | `gh` + `GH_TOKEN` | Use with `list_workflow_runs` |
-| `report_longterm` | Write a distilled long-term memory section | `--longterm FILE` | Prompted when due, every N runs |
+| `calculate` | Safe arithmetic evaluation | — | Supports +, -, *, /, //, %, **, parentheses, constants pi/e/tau, functions abs, round, min, max, sqrt, log, exp, sin, cos, tan. Rejects anything non-mathematical |
+| `now_utc` | Current UTC time, ISO-8601 | — | UTC only; timezone parameter must be "UTC" |
+| `fetch_url` | Fetch a public web page as text | network | SSRF-protected; blocks private/loopback/reserved/multicast hosts; redirects re-validated (max 5), connection pinned to the resolved IP; max 512KB download, 4000 char return |
+| `read_file` | Read a text file | — | Relative to the working directory; 64 KB cap; cannot escape sandbox |
+| `write_file` | Create/overwrite a text file | — | Confined to the working directory; 256 KB cap; creates parent directories |
+| `list_files` | List a directory | — | Confined to the working directory; shows files and subdirectories |
+| `list_issues` | List repository issues | `gh` + `GH_TOKEN` | Backed by GitHub CLI; returns title, number, labels |
+| `search_issues` | Search existing issues | `gh` + `GH_TOKEN` | Call before `create_issue` to avoid duplicates |
+| `create_issue` | File a repository issue | `gh` + `GH_TOKEN` | 200-char title, 20 K-char body caps; requires `issues: write` permission |
+| `dispatch_workflow` | Trigger a workflow with a `workflow_dispatch` trigger | `gh` + `GH_TOKEN` (+ `actions: write` in CI) | Input names validated (alphanumeric + _.-); max 8 inputs, 2 K-char values each |
+| `list_workflow_runs` | List recent runs of a workflow | `gh` + `GH_TOKEN` | 1–50 runs; returns ID, event, status, conclusion |
+| `view_run` | Status, conclusion, and per-job summary of one run | `gh` + `GH_TOKEN` | Use with `list_workflow_runs`; shows job-level status |
+| `report_longterm` | Write a distilled long-term memory section | `--longterm FILE` | Prompted when due, every N runs (default 5) |
+
+## Debugging
+
+### Tool Call Logging
+
+When running the agent, tool calls are logged to stdout:
+```
+[tool] fetch_url({"url": "https://example.com"})
+```
+
+### Error Messages
+
+All tools return descriptive error messages when they fail:
+- Invalid arguments: `Error: <description>`
+- Sandbox violations: `Error: path escapes the working directory`
+- Network errors: `Error: fetch failed: <reason>`
+- SSRF protection: `Error: refusing to fetch non-public address <IP>`
+
+### Verbose Mode
+
+To debug API calls, set the `FOXNAUGHT_DEBUG` environment variable:
+```bash
+FOXNAUGHT_DEBUG=1 python -m foxnaught --one-shot "Hello"
+```
+
+This will print detailed information about HTTP requests and responses.
 
 Tool execution is visible as `[tool] name(arguments)` lines in CLI and workflow logs.
 
@@ -236,12 +331,26 @@ conversation:
 }
 ```
 
+**Fields:**
+- `runs`: Total number of agent runs (turns) in this session
+- `last_report_run`: Last run number when long-term memory was reported
+- `messages`: Array of conversation messages with `role`, `content`, and optionally `tool_calls`/`tool_call_id`
+
 The older bare-array format is still loaded for backwards compatibility
 (runs counters then start from zero).
 
 Messages also carry `tool_calls` / `tool_call_id` when tools were used, matching
-the Mistral chat-completions wire format. Files are written atomically, so a
-crash mid-write cannot corrupt them.
+the Mistral chat-completions wire format. Files are written atomically (via
+`.tmp` files and `os.replace`), so a crash mid-write cannot corrupt them.
+
+**Memory Archive:** When `--memory-archive FILE` is enabled, trimmed messages are
+appended to a markdown file. Each entry includes the role and content (truncated
+to 2000 chars). Tool calls are noted with their names.
+
+**Long-term Memory:** When `--longterm FILE` is enabled, the agent is prompted
+to write distilled summaries every N runs (default 5). These are stored as
+dated, run-labelled sections in a markdown file and injected into the system
+prompt for context across long-running conversations.
 
 ## Adding a tool
 

@@ -141,7 +141,11 @@ class Agent:
             raise
 
     def _trim_history(self, archive: bool = False) -> None:
-        """Keep the system prompt plus recent history within count and char limits."""
+        """Keep the system prompt plus recent history within count and char limits.
+        
+        Trims oldest messages first, preferring to keep tool call/result pairs together.
+        Also removes orphaned tool messages (tool results without their call).
+        """
         dropped: list[Message] = []
         while True:
             over_count = self.history_limit is not None and len(self.history) > self.history_limit

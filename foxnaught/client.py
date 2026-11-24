@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import time
@@ -14,6 +15,8 @@ from typing import Any
 
 DEFAULT_BASE_URL = "https://api.mistral.ai/v1"
 DEFAULT_MODEL = "mistral-small-latest"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -81,6 +84,9 @@ class MistralClient:
         self.model = model or os.environ.get("MISTRAL_MODEL", DEFAULT_MODEL)
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self.retries_on_rate_limit = retries_on_rate_limit
+        self._debug = os.environ.get("FOXNAUGHT_DEBUG", "").lower() in ("1", "true", "yes")
+        if self._debug:
+            logging.basicConfig(level=logging.DEBUG)
 
     def chat(
         self,
@@ -155,18 +161,30 @@ class MistralClient:
         last_rate_limit: urllib.error.HTTPError | None = None
         for attempt in range(attempts):
             if attempt:
-                time.sleep(self._retry_delay(attempt))
+                delay = self._retry_delay(attempt)
+                if self._debug:
+                    logger.debug(f"Retry attempt {attempt}, waiting {delay:.2f}s")
+                time.sleep(delay)
             try:
-                return urllib.request.urlopen(request, timeout=120)
+                if self._debug:
+                    logger.debug(f"Opening request to {request.url}")
+                response = urllib.request.urlopen(request, timeout=120)
+                if self._debug:
+                    logger.debug(f"Response status: {response.status}")
+                return response
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
+                if self._debug:
+                    logger.debug(f"HTTP error {exc.code}: {detail}")
                 if exc.code == 429 and self.retries_on_rate_limit and attempt < len(self.RETRY_DELAYS):
                     last_rate_limit = exc
                     continue
                 raise MistralError(f"HTTP {exc.code} from Mistral API: {detail}") from exc
             except urllib.error.URLError as exc:
+                if self._debug:
+                    logger.debug(f"URL error: {exc.reason}")
                 raise MistralError(f"could not reach the Mistral API: {exc.reason}") from exc
-        raise MistralError("rate limit retries exhausted", ) from last_rate_limit
+        raise MistralError("rate limit retries exhausted") from last_rate_limit
 
     def _retry_delay(self, attempt: int) -> float:
         base = self.RETRY_DELAYS[attempt - 1]
