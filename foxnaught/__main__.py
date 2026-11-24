@@ -12,6 +12,7 @@ from .builtins import register_defaults
 from .client import MistralClient, MistralError
 from .files import register_files
 from .gh import register_github
+from .longterm import DEFAULT_LONGTERM_INTERVAL, DEFAULT_LONGTERM_MAX_CHARS
 from .tools import ToolRegistry
 from .web import register_web
 
@@ -35,6 +36,9 @@ def build_agent(
     memory_archive_path: str | None = None,
     memory_archive_max_chars: int | None = None,
     system_prompt: str = SYSTEM_PROMPT,
+    longterm_path: str | None = None,
+    longterm_interval: int = DEFAULT_LONGTERM_INTERVAL,
+    longterm_max_chars: int | None = None,
 ) -> Agent:
     client = MistralClient(model=model)
 
@@ -51,6 +55,9 @@ def build_agent(
         history_char_budget=history_char_budget,
         memory_archive_path=memory_archive_path,
         memory_archive_max_chars=memory_archive_max_chars,
+        longterm_path=longterm_path,
+        longterm_interval=longterm_interval,
+        longterm_max_chars=longterm_max_chars,
     )
 
 
@@ -185,6 +192,30 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--longterm",
+        metavar="FILE",
+        default=None,
+        help=(
+            "maintain a distilled long-term memory markdown file that the "
+            "agent reports to every --longterm-interval runs"
+        ),
+    )
+    parser.add_argument(
+        "--longterm-interval",
+        type=int,
+        default=DEFAULT_LONGTERM_INTERVAL,
+        help="report to long-term memory every this many runs (default 5)",
+    )
+    parser.add_argument(
+        "--longterm-max-chars",
+        type=int,
+        default=DEFAULT_LONGTERM_MAX_CHARS,
+        help=(
+            "when long-term memory exceeds this many characters, prune the "
+            "oldest sections (0 disables pruning)"
+        ),
+    )
+    parser.add_argument(
         "--auth-token",
         default=None,
         help=(
@@ -204,6 +235,9 @@ def main(argv: list[str] | None = None) -> int:
             memory_archive_path=args.memory_archive,
             memory_archive_max_chars=args.archive_max_chars or None,
             system_prompt=args.system_prompt,
+            longterm_path=args.longterm,
+            longterm_interval=args.longterm_interval,
+            longterm_max_chars=args.longterm_max_chars or None,
         )
     except MistralError as exc:
         print(f"error: {exc}", file=sys.stderr)

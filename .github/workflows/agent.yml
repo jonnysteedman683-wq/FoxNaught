@@ -72,7 +72,7 @@ jobs:
           MISTRAL_MODEL: ${{ inputs.model || 'mistral-small-latest' }}
           MAX_STEPS: ${{ inputs.max_steps || '16' }}
           AGENT_PROMPT: ${{ inputs.prompt || (github.event_name == 'schedule' && 'Review the repository and update REPORT.md with any notable changes or findings since last time using the write_file tool. If you find a new, distinct problem worth tracking, search existing issues first and create an issue for it.') || 'Review this repository and write a short review to REPORT.md using the write_file tool. Then summarise your review in the reply.' }}
-        run: python -m foxnaught --model "$MISTRAL_MODEL" --max-steps "$MAX_STEPS" --memory agent-memory.json --memory-archive MEMORY.md --one-shot "$AGENT_PROMPT"
+        run: python -m foxnaught --model "$MISTRAL_MODEL" --max-steps "$MAX_STEPS" --memory agent-memory.json --memory-archive MEMORY.md --longterm LONGTERM.md --one-shot "$AGENT_PROMPT"
       - name: Upload conversation memory
         if: always()
         uses: actions/upload-artifact@v4
@@ -81,6 +81,7 @@ jobs:
           path: |
             agent-memory.json
             MEMORY.md
+            LONGTERM.md
           if-no-files-found: ignore
       - name: Upload report
         if: always()

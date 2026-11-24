@@ -9,6 +9,8 @@ Python using only the standard library.
 - Built-in tools: safe arithmetic evaluation (`calculate`) and current UTC time (`now_utc`).
 - Streaming replies (`--stream`) via SSE deltas from the Mistral API.
 - Persistent conversation memory (`--memory FILE`) that survives between one-shot runs.
+- Three-tier memory: hot conversation, verbatim archive, and a distilled long-term
+  memory the agent reports to every N runs (`--longterm FILE`).
 - GitHub integration: issue tools, workflow dispatch/run-inspection tools, and a
   `/foxnaught` comment-triggered Assistant workflow.
 - Distinct agent roles via `--system-prompt` (one codebase, many agents).
@@ -118,7 +120,8 @@ curl -s -X POST localhost:8080/chat \
   - **continue_from** — `previous` (default) resumes the last run's conversation via the `agent-memory` artifact; `fresh` starts clean
   - **max_steps** — maximum tool steps per turn (default 16; raise it for prompts that need to read a lot of the repo)
   - **commit_report** — opt-in commit of `REPORT.md` back to `main`
-  Both `REPORT.md` and the conversation memory are uploaded as run artifacts.
+  Both `REPORT.md` and the conversation memory (including the verbatim archive
+  and distilled long-term memory) are uploaded as run artifacts.
   The workflow is scheduled daily at 06:00 UTC (GitHub may delay scheduled runs
   by up to an hour on low-traffic repositories).
 - **Assistant** (`.github/workflows/assistant.yml`): a second, distinct agent
@@ -158,6 +161,20 @@ the archive exceeds `--archive-max-chars` (default 100,000, `0` disables), the
 oldest entries are pruned with an inline note; per-message content is capped
 at 2,000 characters.
 
+**Long-term memory**: `--longterm FILE` maintains a distilled, compacted
+knowledge file that is formatted differently from the archive: dated,
+run-labelled sections of bullets the agent itself writes. Every
+`--longterm-interval` runs (default 5), the system prompt flags that a report
+is due and the agent calls the `report_longterm` tool with a short summary of
+durable facts, decisions, and lessons learned — never transcripts. The
+snapshot is injected into the system prompt each turn, so the agent always
+remembers its long-term conclusions even after the conversation and archive
+rolled past them. When the file exceeds `--longterm-max-chars` (default
+20,000, `0` disables), the oldest sections are pruned. The Agent workflow
+passes `--longterm LONGTERM.md` and ships it inside the `agent-memory`
+artifact; note that a `continue_from: fresh` run skips the whole restore and
+therefore starts without long-term memory too.
+
 **Live integration tests**: `tests/test_live.py` performs real API round trips
 (tool call, streaming, and memory) and runs automatically in the `live-test` CI
 job when `MISTRAL_API_KEY` is set; without the secret they are skipped.
@@ -194,20 +211,29 @@ Without it, agent runs fail with a clear error message.
 | `dispatch_workflow` | Trigger a workflow with a `workflow_dispatch` trigger | `gh` + `GH_TOKEN` (+ `actions: write` in CI) | Input names validated; 8 inputs, 2 K-char values |
 | `list_workflow_runs` | List recent runs of a workflow | `gh` + `GH_TOKEN` | 1–50 runs |
 | `view_run` | Status, conclusion, and per-job summary of one run | `gh` + `GH_TOKEN` | Use with `list_workflow_runs` |
+| `report_longterm` | Write a distilled long-term memory section | `--longterm FILE` | Prompted when due, every N runs |
 
 Tool execution is visible as `[tool] name(arguments)` lines in CLI and workflow logs.
 
 ## Memory file format
 
-The `--memory FILE` file is a JSON array of message objects:
+The `--memory FILE` file is a JSON object holding run bookkeeping plus the
+conversation:
 
 ```json
-[
-  {"role": "system", "content": "You are FoxNaught..."},
-  {"role": "user", "content": "What is 6 * 7?"},
-  {"role": "assistant", "content": "42"}
-]
+{
+  "runs": 12,
+  "last_report_run": 10,
+  "messages": [
+    {"role": "system", "content": "You are FoxNaught..."},
+    {"role": "user", "content": "What is 6 * 7?"},
+    {"role": "assistant", "content": "42"}
+  ]
+}
 ```
+
+The older bare-array format is still loaded for backwards compatibility
+(runs counters then start from zero).
 
 Messages also carry `tool_calls` / `tool_call_id` when tools were used, matching
 the Mistral chat-completions wire format. Files are written atomically, so a

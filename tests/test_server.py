@@ -293,7 +293,9 @@ class ServerMemoryTest(unittest.TestCase):
         urllib.request.urlopen(request, timeout=5).read()
         with open(path, encoding="utf-8") as fh:
             saved = json.load(fh)
-        self.assertEqual([m["role"] for m in saved], ["system", "user", "assistant"])
+        self.assertEqual(
+            [m["role"] for m in saved["messages"]], ["system", "user", "assistant"]
+        )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .client import Message, MistralClient
+from .longterm import (
+    DEFAULT_LONGTERM_INTERVAL,
+    DEFAULT_LONGTERM_MAX_CHARS,
+    LONGTERM_DUE_NOTE,
+    LONGTERM_MEMO,
+    LONGTERM_SNIPPET_CHARS,
+    append_longterm,
+    longterm_due,
+    read_longterm,
+    register_longterm_tool,
+)
 from .tools import ToolRegistry
 
 DEFAULT_MAX_STEPS = 16
@@ -40,11 +51,24 @@ class Agent:
         history_char_budget: int | None = DEFAULT_HISTORY_CHAR_BUDGET,
         memory_archive_path: str | None = None,
         memory_archive_max_chars: int | None = DEFAULT_ARCHIVE_MAX_CHARS,
+        longterm_path: str | None = None,
+        longterm_interval: int = DEFAULT_LONGTERM_INTERVAL,
+        longterm_max_chars: int | None = DEFAULT_LONGTERM_MAX_CHARS,
     ) -> None:
         self.client = client
         self.registry = registry
         if memory_archive_path:
             system_prompt += ARCHIVE_NOTE.format(path=memory_archive_path)
+        self.longterm_path = longterm_path
+        self.longterm_interval = longterm_interval
+        self.longterm_max_chars = longterm_max_chars
+        self.runs = 0
+        self.last_report_run = 0
+        if longterm_path:
+            system_prompt += "\n\n" + LONGTERM_MEMO.format(
+                path=longterm_path, interval=longterm_interval
+            )
+            self._register_longterm_tool()
         self.system_prompt = system_prompt
         self.memory_archive_path = memory_archive_path
         self.memory_archive_max_chars = memory_archive_max_chars
@@ -57,8 +81,45 @@ class Agent:
     def reset(self) -> None:
         self.history = [Message(role="system", content=self.system_prompt)]
 
+    def _refresh_system_prompt(self) -> None:
+        """Rebuild the system message with the long-term memory snapshot and due state."""
+        if not self.longterm_path:
+            return
+        parts = [self.system_prompt]
+        snapshot = read_longterm(self.longterm_path, max_chars=LONGTERM_SNIPPET_CHARS)
+        if snapshot:
+            parts.append("\n\nCurrent long-term memory snapshot:\n\n" + snapshot)
+        if longterm_due(self.runs, self.last_report_run, self.longterm_interval):
+            parts.append("\n\n" + LONGTERM_DUE_NOTE.format(number=self.runs))
+        self.history[0] = Message(role="system", content="".join(parts))
+
+    def _register_longterm_tool(self) -> None:
+        agent = self
+
+        def report(summary: str) -> str:
+            text = (summary or "").strip()
+            if not text:
+                return "Error: summary must be a non-empty string"
+            append_longterm(
+                agent.longterm_path,
+                agent.runs,
+                text,
+                max_chars=agent.longterm_max_chars,
+            )
+            agent.last_report_run = agent.runs
+            return f"recorded long-term memory update for run {agent.runs}"
+
+        try:
+            register_longterm_tool(
+                self.registry, report, interval=self.longterm_interval
+            )
+        except ValueError:
+            pass
+
     def run_turn(self, user_input: str) -> str:
         """Process one user message, running any tool calls, and reply."""
+        self.runs += 1
+        self._refresh_system_prompt()
         self.history.append(Message(role="user", content=user_input))
         for _ in range(self.max_steps):
             response = self.client.chat(self.history, self.registry.schemas())
@@ -125,6 +186,8 @@ class Agent:
         on_delta: Callable[[str], None] | None = None,
     ) -> str:
         """Like run_turn, but streams reply deltas via on_delta as they arrive."""
+        self.runs += 1
+        self._refresh_system_prompt()
         self.history.append(Message(role="user", content=user_input))
         schemas = self.registry.schemas()
         for _ in range(self.max_steps):
@@ -253,8 +316,12 @@ def compact_archive(path: str, max_chars: int) -> None:
 
 
 def save_history(agent: Agent, path: str) -> None:
-    """Write the agent conversation history to a JSON file."""
-    data = [message.to_dict() for message in agent.history]
+    """Write the agent conversation history and run bookkeeping to a JSON file."""
+    data = {
+        "runs": agent.runs,
+        "last_report_run": agent.last_report_run,
+        "messages": [message.to_dict() for message in agent.history],
+    }
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
@@ -262,13 +329,27 @@ def save_history(agent: Agent, path: str) -> None:
 
 
 def load_history(agent: Agent, path: str) -> None:
-    """Load conversation history from a JSON file into the agent."""
+    """Load conversation history from a JSON file into the agent.
+
+    Accepts either the current dict format (with runs bookkeeping) or the
+    legacy bare list of messages.
+    """
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
-    if not isinstance(data, list) or not data:
+    if isinstance(data, dict):
+        raw_messages = data.get("messages")
+        if not isinstance(raw_messages, list) or not raw_messages:
+            raise ValueError(f"history file {path!r} must contain a non-empty list")
+        agent.runs = int(data.get("runs", 0))
+        agent.last_report_run = int(data.get("last_report_run", 0))
+    elif isinstance(data, list):
+        raw_messages = data
+        if not data:
+            raise ValueError(f"history file {path!r} must contain a non-empty list")
+    else:
         raise ValueError(f"history file {path!r} must contain a non-empty list")
     messages: list[Message] = []
-    for entry in data:
+    for entry in raw_messages:
         if not isinstance(entry, dict) or "role" not in entry:
             raise ValueError(f"history file {path!r} has an invalid message entry")
         entry = dict(entry)
