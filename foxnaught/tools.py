@@ -64,8 +64,8 @@ class ToolRegistry:
             return f"Error: arguments for {name} must be a JSON object"
         try:
             result = tool.func(**args)
+            if not isinstance(result, str):
+                result = json.dumps(result)
         except Exception as exc:  # noqa: BLE001 - surface tool errors to the model
             return f"Error: {type(exc).__name__}: {exc}"
-        if not isinstance(result, str):
-            result = json.dumps(result)
         return result

@@ -50,6 +50,20 @@ class ChatStreamTest(unittest.TestCase):
             with self.assertRaises(MistralError):
                 list(make_client().chat_stream([Message(role="user", content="hi")]))
 
+    def test_invalid_chunk_closes_response(self) -> None:
+        closed: list[bool] = []
+
+        class TrackedBytesIO(io.BytesIO):
+            def close(self) -> None:
+                closed.append(True)
+                super().close()
+
+        body = b"data: {oops}\n\ndata: [DONE]\n\n"
+        with mock.patch("urllib.request.urlopen", return_value=TrackedBytesIO(body)):
+            with self.assertRaises(MistralError):
+                list(make_client().chat_stream([Message(role="user", content="hi")]))
+        self.assertEqual(closed, [True])
+
     def test_rate_limited_stream_is_retried(self) -> None:
         rate_limited = urllib.error.HTTPError("u", 429, "TLM", {}, mock.MagicMock())
         rate_limited.read = mock.MagicMock(return_value=b"{}")

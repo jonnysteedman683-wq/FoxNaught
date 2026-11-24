@@ -38,6 +38,22 @@ def issue_json(*numbers: int) -> str:
 
 
 class RunGhTest(unittest.TestCase):
+    def test_returns_stdout_on_success(self) -> None:
+        with (
+            mock.patch.dict("os.environ", {"GH_TOKEN": "t"}),
+            mock.patch("shutil.which", return_value="/usr/bin/gh"),
+            mock.patch("subprocess.run", return_value=gh_result(stdout="ok\n")),
+        ):
+            self.assertEqual(run_gh(["issue", "list"]), "ok\n")
+
+    def test_accepts_github_token_without_gh_token(self) -> None:
+        with (
+            mock.patch.dict("os.environ", {"GITHUB_TOKEN": "t"}, clear=True),
+            mock.patch("shutil.which", return_value="/usr/bin/gh"),
+            mock.patch("subprocess.run", return_value=gh_result(stdout="out")) as run_mock,
+        ):
+            self.assertEqual(run_gh(["issue", "list"]), "out")
+        run_mock.assert_called_once()
     def test_missing_gh_binary_raises(self) -> None:
         with mock.patch.dict("os.environ", {"GH_TOKEN": "t"}), mock.patch("shutil.which", return_value=None):
             with self.assertRaisesRegex(Exception, "not installed"):
@@ -92,6 +108,22 @@ class ListIssuesTest(unittest.TestCase):
         with mock.patch("foxnaught.gh.run_gh", side_effect=GHToolError("no gh")):
             self.assertTrue(list_issues().startswith("Error: no gh"))
 
+    def test_clamps_limit_and_rejects_non_integer(self) -> None:
+        with mock.patch("foxnaught.gh.run_gh", return_value=issue_json(1)) as run_gh_mock:
+            list_issues(limit=999)
+            call = run_gh_mock.call_args.args[0]
+            self.assertEqual(call[call.index("--limit") + 1], "50")
+            list_issues(limit=0)
+            call = run_gh_mock.call_args.args[0]
+            self.assertEqual(call[call.index("--limit") + 1], "1")
+            run_gh_mock.reset_mock()
+            self.assertEqual(list_issues(limit="nope"), "Error: limit must be an integer")
+            run_gh_mock.assert_not_called()
+
+    def test_unexpected_json_is_error(self) -> None:
+        with mock.patch("foxnaught.gh.run_gh", return_value="not-json"):
+            self.assertEqual(list_issues(), "Error: unexpected gh output")
+
 
 class SearchIssuesTest(unittest.TestCase):
     def test_passes_query_positionally(self) -> None:
@@ -103,6 +135,23 @@ class SearchIssuesTest(unittest.TestCase):
 
     def test_rejects_empty_query(self) -> None:
         self.assertTrue(search_issues("  ").startswith("Error:"))
+
+    def test_formats_results_and_surfaces_tool_error(self) -> None:
+        from foxnaught.gh import GHToolError
+
+        with mock.patch("foxnaught.gh.run_gh", return_value=issue_json(3)):
+            result = search_issues("flaky test")
+        self.assertIn("#3", result)
+        self.assertIn("Issue 3", result)
+        with mock.patch("foxnaught.gh.run_gh", side_effect=GHToolError("no gh")):
+            self.assertEqual(search_issues("q"), "Error: no gh")
+        with mock.patch("foxnaught.gh.run_gh", return_value="[]") as run_gh_mock:
+            self.assertEqual(search_issues("q", limit="nope"), "Error: limit must be an integer")
+        run_gh_mock.assert_not_called()
+
+    def test_unexpected_json_is_error(self) -> None:
+        with mock.patch("foxnaught.gh.run_gh", return_value="not-json"):
+            self.assertEqual(search_issues("q"), "Error: unexpected gh output")
 
 
 class CreateIssueTest(unittest.TestCase):
@@ -131,6 +180,28 @@ class CreateIssueTest(unittest.TestCase):
             create_issue("t", "b", labels=["ok", 5, None])
         call = run_gh_mock.call_args.args[0]
         self.assertEqual(call.count("--label"), 1)
+
+    def test_tool_error_and_body_file_is_unlinked(self) -> None:
+        from foxnaught.gh import GHToolError
+
+        def deny(arguments):
+            raise GHToolError("denied")
+
+        with mock.patch("foxnaught.gh.run_gh", side_effect=deny) as run_gh_mock:
+            result = create_issue("Title", "Body text")
+        self.assertEqual(result, "Error: denied")
+        run_gh_mock.assert_called_once()
+        call = run_gh_mock.call_args.args[0]
+        body_file = call[call.index("--body-file") + 1]
+        self.assertFalse(os.path.exists(body_file))
+
+    def test_caps_labels_at_five(self) -> None:
+        with mock.patch("foxnaught.gh.run_gh", return_value="url") as run_gh_mock:
+            create_issue("t", "b", labels=["a", "b", "c", "d", "e", "f"])
+        call = run_gh_mock.call_args.args[0]
+        positions = [i for i, arg in enumerate(call) if arg == "--label"]
+        self.assertEqual(len(positions), 5)
+        self.assertEqual([call[i + 1] for i in positions], ["a", "b", "c", "d", "e"])
 
 
 class RegistrationTest(unittest.TestCase):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -165,6 +167,152 @@ class StreamingAgentTest(unittest.TestCase):
         )
         self.assertEqual(agent.run_turn_stream("hello"), "hi")
 
+    def test_stream_continues_after_unknown_tool(self) -> None:
+        agent = make_agent()
+        agent.client.chat_stream.side_effect = [
+            events_from_chunks(
+                [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_x",
+                                    "type": "function",
+                                    "function": {"name": "no_such_tool", "arguments": "{}"},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            ),
+            events_from_chunks(
+                [
+                    {
+                        "delta": {"content": "could not use that tool"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            ),
+        ]
+        seen: list[str] = []
+        reply = agent.run_turn_stream("hi", on_delta=seen.append)
+        self.assertEqual(reply, "could not use that tool")
+        self.assertEqual(seen, ["could not use that tool"])
+        tool_message = agent.history[3]
+        self.assertEqual(tool_message.role, "tool")
+        self.assertTrue(tool_message.content.startswith("Error: unknown tool"))
+
+    def test_stream_continues_after_tool_error_string(self) -> None:
+        agent = make_agent()
+        agent.client.chat_stream.side_effect = [
+            events_from_chunks(
+                [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "calculate", "arguments": '{"expression": "1/0"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            ),
+            events_from_chunks(
+                [{"delta": {"content": "that did not work"}, "finish_reason": "stop"}]
+            ),
+        ]
+        seen: list[str] = []
+        reply = agent.run_turn_stream("div", on_delta=seen.append)
+        self.assertEqual(reply, "that did not work")
+        self.assertEqual(seen, ["that did not work"])
+        self.assertEqual(agent.history[3].role, "tool")
+        self.assertTrue(agent.history[3].content.startswith("Error:"))
+
+    def test_stream_exceeding_max_steps_raises(self) -> None:
+        agent = make_agent()
+        agent.max_steps = 2
+        agent.client.chat_stream.return_value = events_from_chunks(
+            [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_loop",
+                                "type": "function",
+                                "function": {"name": "calculate", "arguments": '{"expression": "1+1"}'},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        )
+        with self.assertRaisesRegex(RuntimeError, "exceeded 2 tool steps"):
+            agent.run_turn_stream("loop")
+
+    def test_stream_propagates_mistral_error(self) -> None:
+        from foxnaught.client import MistralError
+
+        agent = make_agent()
+
+        def failing_stream(messages, tools=None):
+            raise MistralError("boom")
+            yield
+
+        agent.client.chat_stream.side_effect = failing_stream
+        with self.assertRaisesRegex(MistralError, "boom"):
+            agent.run_turn_stream("hi")
+
+    def test_stream_failure_rolls_back_history(self) -> None:
+        from foxnaught.client import MistralError
+
+        agent = make_agent()
+
+        def failing_stream(messages, tools=None):
+            raise MistralError("boom")
+            yield
+
+        agent.client.chat_stream.side_effect = failing_stream
+        with self.assertRaises(MistralError):
+            agent.run_turn_stream("hi")
+        self.assertEqual([m.role for m in agent.history], ["system"])
+
+    def test_stream_failure_mid_tool_turn_rolls_back_partial_history(self) -> None:
+        from foxnaught.client import MistralError
+
+        agent = make_agent()
+        agent.client.chat_stream.side_effect = [
+            events_from_chunks(
+                [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "now_utc", "arguments": None},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            ),
+            MistralError("boom"),
+        ]
+        with self.assertRaises(MistralError):
+            agent.run_turn_stream("hi")
+        self.assertEqual([m.role for m in agent.history], ["system"])
+
 
 class MemoryTest(unittest.TestCase):
     def test_save_and_load_round_trip(self) -> None:
@@ -192,11 +340,71 @@ class MemoryTest(unittest.TestCase):
 
     def test_history_without_system_prompt_gets_one(self) -> None:
         agent = make_agent()
-        with open("/tmp/foxnaught-no-system.json", "w") as fh:
-            json.dump([{"role": "user", "content": "hi"}], fh)
-        load_history(agent, "/tmp/foxnaught-no-system.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "no-system.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump([{"role": "user", "content": "hi"}], fh)
+            load_history(agent, path)
         self.assertEqual(agent.history[0].role, "system")
         self.assertEqual(agent.history[1].content, "hi")
+
+    def test_load_history_rejects_empty_file(self) -> None:
+        agent = make_agent()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "empty.json")
+            with open(path, "w", encoding="utf-8"):
+                pass
+            with self.assertRaises(ValueError):
+                load_history(agent, path)
+
+    def test_load_history_rejects_empty_list(self) -> None:
+        agent = make_agent()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "empty-list.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump([], fh)
+            with self.assertRaisesRegex(ValueError, "must contain a non-empty list"):
+                load_history(agent, path)
+
+    def test_load_history_rejects_message_without_role(self) -> None:
+        agent = make_agent()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "no-role.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"messages": [{"content": "hi"}]}, fh)
+            with self.assertRaisesRegex(ValueError, "invalid message entry"):
+                load_history(agent, path)
+
+    def test_load_history_trims_oversized_history(self) -> None:
+        agent = make_agent()
+        for i in range(30):
+            agent.history.append(Message(role="user", content=f"u{i}"))
+            agent.history.append(Message(role="assistant", content=f"a{i}"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "long.json")
+            save_history(agent, path)
+            fresh = make_agent()
+            fresh.history_limit = 6
+            load_history(fresh, path)
+        self.assertEqual(len(fresh.history), 6)
+        self.assertEqual(fresh.history[0].role, "system")
+        self.assertEqual(fresh.history[-1].role, "assistant")
+        self.assertEqual(fresh.history[-1].content, "a29")
+
+    def test_save_history_is_atomic(self) -> None:
+        agent = make_agent()
+        agent.history.append(Message(role="user", content="hi"))
+        agent.history.append(Message(role="assistant", content="ok"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "memory.json")
+            save_history(agent, path)
+            with open(path, encoding="utf-8") as fh:
+                saved = json.load(fh)
+            self.assertFalse(os.path.exists(path + ".tmp"))
+        self.assertIn("runs", saved)
+        self.assertIn("last_report_run", saved)
+        self.assertIsInstance(saved["messages"], list)
+        self.assertTrue(saved["messages"])
 
 
 if __name__ == "__main__":

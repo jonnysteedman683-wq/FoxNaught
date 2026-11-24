@@ -15,7 +15,9 @@ Python using only the standard library.
   `/foxnaught` comment-triggered Assistant workflow.
 - Distinct agent roles via `--system-prompt` (one codebase, many agents).
 - Pluggable tool registry for adding your own tools.
-- Built-in web fetching (`fetch_url`) with SSRF protection against private/non-public hosts.
+- Built-in web fetching (`fetch_url`) with SSRF protection against private/non-public
+  hosts: connections are pinned to the validated IP address (with SNI kept on the
+  hostname, defeating DNS rebinding) and every redirect target is re-validated.
 - Sandboxed file tools (`read_file`, `write_file`, `list_files`) confined to the working directory.
 - GitHub tools (`list_issues`, `search_issues`, `create_issue`) backed by the `gh` CLI, with duplicate-issue avoidance baked into the tool guidance.
 - Three interfaces: interactive chat CLI, headless one-shot mode, and an HTTP API server.
@@ -81,7 +83,9 @@ request (optionally `"reset": true` to wipe it), so restarts keep their memory.
 `POST /chat` can require a bearer token. Pass it via `--auth-token` (or the
 `FOXNAUGHT_AUTH_TOKEN` environment variable); `/health` stays open in either
 case. When no token is configured the server is unauthenticated — do not bind
-it publicly in this mode.
+it publicly in this mode. Connections have a 30-second read timeout, so a
+client that stalls mid-request cannot hold a worker thread indefinitely; a
+body that times out is answered with 400.
 
 ```bash
 python -m foxnaught --serve --host 0.0.0.0 \
@@ -201,7 +205,7 @@ Without it, agent runs fail with a clear error message.
 |---|---|---|---|
 | `calculate` | Safe arithmetic evaluation | — | Rejects anything non-mathematical |
 | `now_utc` | Current UTC time, ISO-8601 | — | UTC only |
-| `fetch_url` | Fetch a public web page as text | network | SSRF-protected; blocks private/loopback/reserved hosts |
+| `fetch_url` | Fetch a public web page as text | network | SSRF-protected; blocks private/loopback/reserved hosts; redirects re-validated, connection pinned to the resolved IP |
 | `read_file` | Read a text file | — | Relative to the working directory; 64 KB cap |
 | `write_file` | Create/overwrite a text file | — | Confined to the working directory; 256 KB cap |
 | `list_files` | List a directory | — | Confined to the working directory |

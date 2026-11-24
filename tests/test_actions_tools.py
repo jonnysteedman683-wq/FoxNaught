@@ -86,6 +86,42 @@ class DispatchWorkflowTest(unittest.TestCase):
             result = dispatch_workflow("agent.yml")
         self.assertEqual(result, "Error: denied")
 
+    def test_rejects_empty_or_oversized_ref(self) -> None:
+        with mock.patch("foxnaught.actions.run_gh", return_value="") as gh:
+            result = dispatch_workflow("agent.yml", "  ")
+            self.assertTrue(result.startswith("Error:"))
+            self.assertIn("ref", result)
+            self.assertEqual(
+                dispatch_workflow("agent.yml", "m" * 201),
+                "Error: workflow name or ref is too long",
+            )
+            self.assertEqual(
+                dispatch_workflow("w" * 101, "main"),
+                "Error: workflow name or ref is too long",
+            )
+        gh.assert_not_called()
+
+    def test_rejects_non_object_inputs(self) -> None:
+        with mock.patch("foxnaught.actions.run_gh", return_value="") as gh:
+            result = dispatch_workflow("agent.yml", "main", inputs="prompt=x")
+        self.assertEqual(
+            result, "Error: inputs must be an object of string key/value pairs"
+        )
+        gh.assert_not_called()
+
+    def test_rejects_oversized_input_value(self) -> None:
+        with mock.patch("foxnaught.actions.run_gh", return_value="") as gh:
+            result = dispatch_workflow("agent.yml", "main", {"prompt": "x" * 2001})
+        self.assertIn("exceeds", result)
+        self.assertIn("prompt", result)
+        gh.assert_not_called()
+
+    def test_coerces_non_string_input_values(self) -> None:
+        with mock.patch("foxnaught.actions.run_gh", return_value="") as gh:
+            dispatch_workflow("agent.yml", "main", inputs={"n": 1})
+        args = gh.call_args.args[0]
+        self.assertIn("n=1", args)
+
 
 class ListRunsTest(unittest.TestCase):
     def test_formats_run_lines(self) -> None:
@@ -107,6 +143,17 @@ class ListRunsTest(unittest.TestCase):
         with mock.patch("foxnaught.actions.run_gh", side_effect=GHToolError("boom")):
             self.assertEqual(list_workflow_runs("ci.yml"), "Error: boom")
 
+    def test_rejects_empty_workflow_and_bad_json(self) -> None:
+        with mock.patch("foxnaught.actions.run_gh", return_value="") as gh:
+            self.assertTrue(list_workflow_runs("  ").startswith("Error:"))
+            gh.assert_not_called()
+        with mock.patch("foxnaught.actions.run_gh", return_value="not-json"):
+            self.assertEqual(list_workflow_runs("ci.yml"), "Error: unexpected gh output")
+        with mock.patch("foxnaught.actions.run_gh", return_value=runs_json()) as gh:
+            list_workflow_runs("ci.yml", limit=999)
+        args = gh.call_args.args[0]
+        self.assertEqual(args[args.index("--limit") + 1], "50")
+
 
 class ViewRunTest(unittest.TestCase):
     def test_includes_header_and_jobs(self) -> None:
@@ -126,6 +173,21 @@ class ViewRunTest(unittest.TestCase):
     def test_missing_run_surfaces_as_error_string(self) -> None:
         with mock.patch("foxnaught.actions.run_gh", side_effect=GHToolError("not found")):
             self.assertEqual(view_run(999), "Error: not found")
+
+    def test_invalid_json_and_missing_jobs(self) -> None:
+        with mock.patch("foxnaught.actions.run_gh", return_value="not-json"):
+            self.assertEqual(view_run(7), "Error: unexpected gh output")
+        run = json.loads(view_json(7))
+        run["jobs"] = []
+        with mock.patch("foxnaught.actions.run_gh", return_value=json.dumps(run)):
+            result = view_run(7)
+        self.assertIn("run 7", result)
+        self.assertNotIn("- job", result)
+        del run["jobs"]
+        with mock.patch("foxnaught.actions.run_gh", return_value=json.dumps(run)):
+            result = view_run(7)
+        self.assertIn("run 7", result)
+        self.assertNotIn("- job", result)
 
 
 class RegisterActionsTest(unittest.TestCase):

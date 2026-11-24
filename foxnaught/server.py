@@ -12,6 +12,7 @@ from .agent import Agent, load_history, save_history
 from .client import MistralError
 
 MAX_BODY_BYTES = 64_000
+READ_TIMEOUT_SECONDS = 30
 AUTH_ENV_VAR = "FOXNAUGHT_AUTH_TOKEN"
 
 
@@ -56,6 +57,7 @@ class AgentState:
 def make_handler(state: AgentState, auth_token: str | None = None) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "FoxNaught/0.1"
+        timeout = READ_TIMEOUT_SECONDS
 
         def do_GET(self) -> None:
             if self.path == "/health":
@@ -124,7 +126,11 @@ def make_handler(state: AgentState, auth_token: str | None = None) -> type[BaseH
             if length > MAX_BODY_BYTES:
                 raise ValueError("request body too large")
             try:
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                body = self.rfile.read(length)
+            except TimeoutError as exc:
+                raise ValueError("timed out reading request body") from exc
+            try:
+                data = json.loads(body.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise ValueError(f"invalid JSON body: {exc}") from exc
             if not isinstance(data, dict):
