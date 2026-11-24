@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import sys
 
@@ -109,9 +110,24 @@ def load_memory(agent: Agent, memory: str | None) -> None:
         load_history(agent, memory)
 
 
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def serve(agent: Agent, host: str, port: int, memory: str | None, auth_token: str | None) -> None:
     from .server import make_server
 
+    if not _is_loopback(host) and not auth_token:
+        print(
+            "warning: binding without --auth-token or FOXNAUGHT_AUTH_TOKEN; "
+            "POST /chat is unauthenticated and reachable from the network",
+            file=sys.stderr,
+        )
     server = make_server(agent, host=host, port=port, memory_path=memory, auth_token=auth_token)
     print(f"FoxNaught agent listening on http://{host}:{server.server_address[1]}")
     try:
@@ -224,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if args.one_shot is not None and args.serve:
+        parser.error("--one-shot and --serve are mutually exclusive")
 
     try:
         agent = build_agent(
