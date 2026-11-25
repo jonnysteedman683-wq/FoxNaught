@@ -392,7 +392,7 @@ def _history_message(entry: Any, index: int, path: str) -> Message:
     if not isinstance(entry, dict):
         raise invalid("not an object")
     role = entry.get("role")
-    if role not in HISTORY_ROLES:
+    if not isinstance(role, str) or role not in HISTORY_ROLES:
         raise invalid(f"role must be one of {sorted(HISTORY_ROLES)}, got {role!r}")
     for key in ("content", "name", "tool_call_id"):
         if entry.get(key) is not None and not isinstance(entry[key], str):

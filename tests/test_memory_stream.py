@@ -467,6 +467,8 @@ class LoadHistoryErrorTest(unittest.TestCase):
             "not an object": '["hi"]',
             "missing role": '[{"content": "hi"}]',
             "non-string role": '[{"role": "user"}, {"role": 123}]',
+            "list role": '[{"role": ["user"], "content": "hi"}]',
+            "object role": '[{"role": {"name": "user"}}]',
             "unknown role": '[{"role": "wizard", "content": "hi"}]',
             "non-string content": '[{"role": "user", "content": 5}]',
             "non-string name": '[{"role": "tool", "name": ["x"], "content": "ok"}]',
