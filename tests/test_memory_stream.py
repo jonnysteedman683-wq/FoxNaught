@@ -413,5 +413,136 @@ class MemoryTest(unittest.TestCase):
         self.assertTrue(saved["messages"])
 
 
+class LoadHistoryErrorTest(unittest.TestCase):
+    """Malformed memory files raise ValueError and leave the agent untouched."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = os.path.join(tmp.name, "memory.json")
+        self.agent = make_agent()
+        self.agent.runs = 7
+        self.agent.last_report_run = 4
+        self.agent.history.append(Message(role="user", content="keep me"))
+        self.before = list(self.agent.history)
+
+    def write(self, raw: str | bytes) -> None:
+        with open(self.path, "wb") as fh:
+            fh.write(raw.encode("utf-8") if isinstance(raw, str) else raw)
+
+    def assert_rejected(self, raw: str | bytes, error: type[Exception] = ValueError, pattern: str | None = None) -> None:
+        self.write(raw)
+        if pattern is None:
+            with self.assertRaises(error):
+                load_history(self.agent, self.path)
+        else:
+            with self.assertRaisesRegex(error, pattern):
+                load_history(self.agent, self.path)
+        self.assertEqual(self.agent.history, self.before)
+        self.assertEqual(self.agent.runs, 7)
+        self.assertEqual(self.agent.last_report_run, 4)
+
+    def test_truncated_json(self) -> None:
+        self.assert_rejected('{"runs": 1, "messages": [', json.JSONDecodeError)
+
+    def test_non_utf8_bytes(self) -> None:
+        self.assert_rejected(b"\xff\xfe\x00garbage", UnicodeDecodeError)
+
+    def test_decode_errors_are_value_errors_for_callers(self) -> None:
+        self.assertTrue(issubclass(json.JSONDecodeError, ValueError))
+        self.assertTrue(issubclass(UnicodeDecodeError, ValueError))
+
+    def test_top_level_scalars(self) -> None:
+        for raw in ("42", '"hello"', "null", "true"):
+            with self.subTest(raw=raw):
+                self.assert_rejected(raw, pattern="must contain a non-empty list")
+
+    def test_dict_with_bad_messages(self) -> None:
+        for raw in ('{"runs": 1}', '{"messages": "oops"}', '{"messages": []}', '{"messages": {"role": "user"}}'):
+            with self.subTest(raw=raw):
+                self.assert_rejected(raw, pattern="must contain a non-empty list")
+
+    def test_invalid_message_entries(self) -> None:
+        cases = {
+            "not an object": '["hi"]',
+            "missing role": '[{"content": "hi"}]',
+            "non-string role": '[{"role": "user"}, {"role": 123}]',
+            "unknown role": '[{"role": "wizard", "content": "hi"}]',
+            "non-string content": '[{"role": "user", "content": 5}]',
+            "non-string name": '[{"role": "tool", "name": ["x"], "content": "ok"}]',
+            "non-string tool_call_id": '[{"role": "tool", "tool_call_id": 1, "content": "ok"}]',
+            "tool_calls not a list": '[{"role": "assistant", "tool_calls": "now_utc"}]',
+            "tool call not an object": '[{"role": "assistant", "tool_calls": ["now_utc"]}]',
+        }
+        for label, raw in cases.items():
+            with self.subTest(label):
+                self.assert_rejected(raw, pattern=r"invalid message entry at index \d")
+
+    def test_invalid_counters_raise_value_error_not_type_error(self) -> None:
+        message = '[{"role": "user", "content": "hi"}]'
+        for key in ("runs", "last_report_run"):
+            for value in ("null", '"abc"', '"5"', "[1]", "-1", "true", "1.5"):
+                with self.subTest(key=key, value=value):
+                    self.assert_rejected(
+                        f'{{"{key}": {value}, "messages": {message}}}',
+                        pattern=f"invalid '{key}'",
+                    )
+
+    def test_bad_entry_after_valid_counters_does_not_apply_counters(self) -> None:
+        self.assert_rejected(
+            '{"runs": 99, "last_report_run": 98, "messages": [{"role": "user", "content": "ok"}, {"content": "x"}]}',
+            pattern="index 1",
+        )
+
+    def test_legacy_list_keeps_existing_counters(self) -> None:
+        self.write('[{"role": "user", "content": "hi"}]')
+        load_history(self.agent, self.path)
+        self.assertEqual((self.agent.runs, self.agent.last_report_run), (7, 4))
+        self.assertEqual([m.role for m in self.agent.history], ["system", "user"])
+
+    def test_dict_without_counters_resets_them(self) -> None:
+        self.write('{"messages": [{"role": "user", "content": "hi"}]}')
+        load_history(self.agent, self.path)
+        self.assertEqual((self.agent.runs, self.agent.last_report_run), (0, 0))
+
+    def test_valid_tool_messages_load(self) -> None:
+        self.write(
+            json.dumps(
+                {
+                    "runs": 2,
+                    "last_report_run": 1,
+                    "messages": [
+                        {"role": "user", "content": "time?"},
+                        {
+                            "role": "assistant",
+                            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "now_utc"}}],
+                        },
+                        {"role": "tool", "name": "now_utc", "tool_call_id": "c1", "content": "12:00"},
+                        {"role": "assistant", "content": "noon"},
+                    ],
+                }
+            )
+        )
+        load_history(self.agent, self.path)
+        self.assertEqual([m.role for m in self.agent.history], ["system", "user", "assistant", "tool", "assistant"])
+        self.assertEqual(self.agent.history[3].tool_call_id, "c1")
+        self.assertEqual((self.agent.runs, self.agent.last_report_run), (2, 1))
+
+    def test_directory_path_raises_os_error(self) -> None:
+        with self.assertRaises(OSError):
+            load_history(self.agent, os.path.dirname(self.path))
+
+    def test_server_state_survives_corrupt_memory(self) -> None:
+        from foxnaught.server import AgentState
+
+        for raw in ('{"runs": null, "messages": [{"role": "user", "content": "x"}]}', '[{"role": "user", "content": 5}]', b"\xff"):
+            with self.subTest(raw=raw):
+                self.write(raw)
+                agent = make_agent()
+                state = AgentState(agent, self.path)
+                self.assertEqual([m.role for m in state.agent.history], ["system"])
+                self.assertEqual(state.agent.runs, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

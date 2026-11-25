@@ -169,5 +169,145 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(len(reloaded.history), 17)
 
 
+def entries(content: str) -> list[str]:
+    return [line for line in content.splitlines() if line.startswith("- ")]
+
+
+class ArchiveEdgeCaseTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.archive = os.path.join(self.dir.name, "MEMORY.md")
+
+    def read(self) -> str:
+        with open(self.archive, encoding="utf-8") as fh:
+            return fh.read()
+
+    def seed(self, count: int, width: int = 50) -> None:
+        archive_messages(
+            self.archive,
+            [Message(role="user", content=f"e{i} " + "x" * width) for i in range(count)],
+            max_chars=None,
+        )
+
+    def test_empty_messages_is_noop(self) -> None:
+        archive_messages(self.archive, [])
+        self.assertFalse(os.path.exists(self.archive))
+        self.seed(1)
+        before = self.read()
+        archive_messages(self.archive, [])
+        self.assertEqual(self.read(), before)
+
+    def test_header_written_once_across_appends(self) -> None:
+        archive_messages(self.archive, [Message(role="user", content="a")], max_chars=None)
+        archive_messages(self.archive, [Message(role="user", content="b")], max_chars=None)
+        content = self.read()
+        self.assertEqual(content.count("# Conversation memory archive"), 1)
+        self.assertEqual(entries(content), ["- user: a", "- user: b"])
+
+    def test_max_chars_none_never_compacts(self) -> None:
+        self.seed(200, width=600)
+        self.assertGreater(len(self.read()), 100_000)
+        self.assertNotIn("pruned", self.read())
+
+    def test_line_cap_boundary(self) -> None:
+        archive_messages(
+            self.archive,
+            [
+                Message(role="user", content="a" * ARCHIVE_LINE_CAP),
+                Message(role="user", content="b" * (ARCHIVE_LINE_CAP + 1)),
+            ],
+            max_chars=None,
+        )
+        exact, over = entries(self.read())
+        self.assertEqual(exact, "- user: " + "a" * ARCHIVE_LINE_CAP)
+        self.assertEqual(over, "- user: " + "b" * ARCHIVE_LINE_CAP + " …")
+
+    def test_lone_surrogate_content_is_escaped_not_fatal(self) -> None:
+        archive_messages(self.archive, [Message(role="assistant", content="bad \ud83d end")], max_chars=None)
+        self.assertIn("- assistant: bad \\ud83d end", self.read())
+
+    def test_max_chars_zero_keeps_only_title_and_note(self) -> None:
+        self.seed(10)
+        archive_messages(self.archive, [Message(role="user", content="newest")], max_chars=0)
+        content = self.read()
+        self.assertTrue(content.startswith("# Conversation memory archive\n"))
+        self.assertEqual(content.count("older entries were pruned"), 1)
+        self.assertEqual(entries(content), [])
+        archive_messages(self.archive, [Message(role="user", content="again")], max_chars=0)
+        self.assertEqual(self.read(), content)
+
+    def test_compaction_stays_within_max_chars_and_keeps_whole_lines(self) -> None:
+        self.seed(40)
+        compact_archive(self.archive, 600)
+        content = self.read()
+        self.assertLessEqual(len(content), 600)
+        kept = entries(content)
+        self.assertTrue(kept)
+        self.assertEqual(kept[-1], "- user: e39 " + "x" * 50)
+        body = content.split(")_\n\n", 1)[1]
+        self.assertEqual(body.splitlines(), kept)
+
+    def test_compaction_is_idempotent(self) -> None:
+        self.seed(40)
+        compact_archive(self.archive, 600)
+        first = self.read()
+        compact_archive(self.archive, 600)
+        self.assertEqual(self.read(), first)
+
+    def test_repeated_small_appends_keep_single_title_and_note(self) -> None:
+        self.seed(5, width=400)
+        compact_archive(self.archive, 1000)
+        for i in range(60):
+            archive_messages(
+                self.archive,
+                [Message(role="user", content="z" * (i * 13 % 300 + 5))],
+                max_chars=1000,
+            )
+            content = self.read()
+            with self.subTest(i=i):
+                self.assertEqual(content.count("# Conversation memory archive"), 1)
+                self.assertLessEqual(content.count("older entries were pruned"), 1)
+                self.assertLessEqual(len(content), 1000)
+
+    def test_compaction_heals_duplicated_notes(self) -> None:
+        note = "_(older entries were pruned to stay under 50 characters on 2026-01-01)_"
+        with open(self.archive, "w", encoding="utf-8") as fh:
+            fh.write(
+                "# Conversation memory archive\n\n\n"
+                + note + "\n\n\n" + note + "\n\n"
+                + "".join(f"- user: line {i}\n" for i in range(50))
+            )
+        compact_archive(self.archive, 400)
+        content = self.read()
+        self.assertEqual(content.count("older entries were pruned"), 1)
+        self.assertEqual(entries(content)[-1], "- user: line 49")
+
+    def test_tiny_max_chars_on_missing_parent_dir(self) -> None:
+        nested = os.path.join(self.dir.name, "a", "b", "MEMORY.md")
+        archive_messages(nested, [Message(role="user", content="y" * 500)], max_chars=10)
+        with open(nested, encoding="utf-8") as fh:
+            content = fh.read()
+        self.assertIn("older entries were pruned", content)
+        self.assertFalse(os.path.exists(nested + ".tmp"))
+
+    def test_compact_missing_file_is_noop(self) -> None:
+        compact_archive(self.archive, 0)
+        self.assertFalse(os.path.exists(self.archive))
+
+    def test_compact_empty_file_is_noop(self) -> None:
+        open(self.archive, "w").close()
+        compact_archive(self.archive, 0)
+        self.assertEqual(self.read(), "")
+
+    def test_compact_tolerates_invalid_utf8(self) -> None:
+        with open(self.archive, "wb") as fh:
+            fh.write(b"# Conversation memory archive\n\n" + b"- user: \xff\xfe\n" * 100)
+        compact_archive(self.archive, 300)
+        content = self.read()
+        self.assertLessEqual(len(content), 300)
+        self.assertIn("�", content)
+
+
 if __name__ == "__main__":
     unittest.main()

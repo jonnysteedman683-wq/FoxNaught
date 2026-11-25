@@ -274,12 +274,25 @@ class Agent:
             )
         )
 
+ARCHIVE_HEADER = "# Conversation memory archive\n\n"
+_ARCHIVE_TITLE = ARCHIVE_HEADER.strip()
+_PRUNE_NOTE_PREFIX = "_(older entries were pruned"
+HISTORY_ROLES = frozenset({"system", "user", "assistant", "tool"})
+
+
 def archive_messages(
     path: str,
     messages: list[Message],
     max_chars: int | None = DEFAULT_ARCHIVE_MAX_CHARS,
 ) -> None:
-    """Append trimmed conversation messages to a markdown archive file."""
+    """Append trimmed conversation messages to a markdown archive file.
+
+    An empty ``messages`` list is a no-op. Text that cannot be encoded as
+    UTF-8 (e.g. lone surrogates from a decoded JSON escape) is written with
+    backslash escapes instead of aborting the trim that triggered the archive.
+    """
+    if not messages:
+        return
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -301,31 +314,54 @@ def archive_messages(
             lines.append(f"- tool result ({message.name}): {text}")
         else:
             lines.append(f"- {message.role}: {text}")
-    header = "" if os.path.exists(path) else "# Conversation memory archive\n\n"
-    with open(path, "a", encoding="utf-8") as fh:
+    header = "" if os.path.exists(path) else ARCHIVE_HEADER
+    with open(path, "a", encoding="utf-8", errors="backslashreplace") as fh:
         fh.write(header + "\n".join(lines) + "\n")
     if max_chars is not None:
         compact_archive(path, max_chars)
 
 
+def _archive_body(content: str) -> str:
+    """Return the archive entries without the leading title and pruning notes."""
+    lines = content.splitlines(keepends=True)
+    start = 0
+    while start < len(lines):
+        stripped = lines[start].strip()
+        if stripped and stripped != _ARCHIVE_TITLE and not stripped.startswith(_PRUNE_NOTE_PREFIX):
+            break
+        start += 1
+    return "".join(lines[start:])
+
+
 def compact_archive(path: str, max_chars: int) -> None:
-    """Keep only the most recent archive lines when the file exceeds max_chars."""
+    """Keep only the most recent whole archive lines when the file exceeds max_chars.
+
+    The rewritten file is the title, a single pruning note and as many of the
+    newest entries as fit, so it stays within ``max_chars`` and is left alone by
+    the next call. A ``max_chars`` smaller than the title and note keeps those
+    alone. Missing files are ignored.
+    """
     if not os.path.exists(path):
         return
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         content = fh.read()
     if len(content) <= max_chars:
         return
-    cut = len(content) - max_chars
-    newline = content.find("\n", cut)
-    keep_from = newline + 1 if newline != -1 else len(content)
     note = (
-        f"\n_(older entries were pruned to stay under {max_chars} characters "
-        f"on {datetime.now(timezone.utc).date()})_\n"
+        f"\n{_PRUNE_NOTE_PREFIX} to stay under {max_chars} characters "
+        f"on {datetime.now(timezone.utc).date()})_\n\n"
     )
+    preamble = ARCHIVE_HEADER + note
+    body = _archive_body(content)
+    budget = max(max_chars - len(preamble), 0)
+    if len(body) > budget:
+        newline = body.find("\n", len(body) - budget - 1)
+        body = body[newline + 1 :] if newline != -1 else ""
+    if preamble + body == content:
+        return
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as fh:
-        fh.write("# Conversation memory archive\n\n" + note + "\n" + content[keep_from:])
+        fh.write(preamble + body)
     os.replace(tmp_path, path)
 
 
@@ -342,42 +378,64 @@ def save_history(agent: Agent, path: str) -> None:
     os.replace(tmp_path, path)
 
 
+def _history_counter(data: dict[str, Any], key: str, path: str) -> int:
+    value = data.get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"history file {path!r} has an invalid {key!r}: {value!r}")
+    return value
+
+
+def _history_message(entry: Any, index: int, path: str) -> Message:
+    def invalid(reason: str) -> ValueError:
+        return ValueError(f"history file {path!r} has an invalid message entry at index {index}: {reason}")
+
+    if not isinstance(entry, dict):
+        raise invalid("not an object")
+    role = entry.get("role")
+    if role not in HISTORY_ROLES:
+        raise invalid(f"role must be one of {sorted(HISTORY_ROLES)}, got {role!r}")
+    for key in ("content", "name", "tool_call_id"):
+        if entry.get(key) is not None and not isinstance(entry[key], str):
+            raise invalid(f"{key} must be a string")
+    tool_calls = entry.get("tool_calls")
+    if tool_calls is not None and (
+        not isinstance(tool_calls, list) or not all(isinstance(call, dict) for call in tool_calls)
+    ):
+        raise invalid("tool_calls must be a list of objects")
+    return Message(
+        role=role,
+        content=entry.get("content"),
+        tool_calls=tool_calls,
+        name=entry.get("name"),
+        tool_call_id=entry.get("tool_call_id"),
+    )
+
+
 def load_history(agent: Agent, path: str) -> None:
     """Load conversation history from a JSON file into the agent.
 
     Accepts either the current dict format (with runs bookkeeping) or the
-    legacy bare list of messages.
+    legacy bare list of messages. The whole file is validated before the agent
+    is touched, so a failed load leaves its history and counters unchanged.
+    Malformed content raises ``ValueError`` (``json.JSONDecodeError`` and
+    ``UnicodeDecodeError`` are subclasses); a missing file raises
+    ``FileNotFoundError``.
     """
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
+    runs, last_report_run = agent.runs, agent.last_report_run
     if isinstance(data, dict):
         raw_messages = data.get("messages")
-        if not isinstance(raw_messages, list) or not raw_messages:
-            raise ValueError(f"history file {path!r} must contain a non-empty list")
-        agent.runs = int(data.get("runs", 0))
-        agent.last_report_run = int(data.get("last_report_run", 0))
-    elif isinstance(data, list):
-        raw_messages = data
-        if not data:
-            raise ValueError(f"history file {path!r} must contain a non-empty list")
+        runs = _history_counter(data, "runs", path)
+        last_report_run = _history_counter(data, "last_report_run", path)
     else:
+        raw_messages = data
+    if not isinstance(raw_messages, list) or not raw_messages:
         raise ValueError(f"history file {path!r} must contain a non-empty list")
-    messages: list[Message] = []
-    for entry in raw_messages:
-        if not isinstance(entry, dict) or "role" not in entry:
-            raise ValueError(f"history file {path!r} has an invalid message entry")
-        entry = dict(entry)
-        role = entry.pop("role")
-        messages.append(
-            Message(
-                role=role,
-                content=entry.get("content"),
-                tool_calls=entry.get("tool_calls"),
-                name=entry.get("name"),
-                tool_call_id=entry.get("tool_call_id"),
-            )
-        )
+    messages = [_history_message(entry, index, path) for index, entry in enumerate(raw_messages)]
     if messages[0].role != "system":
         messages.insert(0, Message(role="system", content=agent.system_prompt))
+    agent.runs = runs
+    agent.last_report_run = last_report_run
     agent.history = messages
     agent._trim_history(archive=True)
