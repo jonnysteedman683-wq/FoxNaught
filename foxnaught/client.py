@@ -11,10 +11,13 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 DEFAULT_BASE_URL = "https://api.mistral.ai/v1"
 DEFAULT_MODEL = "mistral-small-latest"
+MAX_RETRY_AFTER_SECONDS = 30.0
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +161,13 @@ class MistralClient:
 
     def _open_with_retries(self, request: urllib.request.Request) -> Any:
         attempts = 1 + (len(self.RETRY_DELAYS) if self.retries_on_rate_limit else 0)
-        last_rate_limit: urllib.error.HTTPError | None = None
+        last_error: Exception | None = None
+        last_headers: Any = None
         for attempt in range(attempts):
             if attempt:
-                delay = self._retry_delay(attempt)
+                delay = self._retry_after_delay(last_headers)
+                if delay is None:
+                    delay = self._retry_delay(attempt)
                 if self._debug:
                     logger.debug(f"Retry attempt {attempt}, waiting {delay:.2f}s")
                 time.sleep(delay)
@@ -176,15 +182,50 @@ class MistralClient:
                 detail = exc.read().decode("utf-8", errors="replace")
                 if self._debug:
                     logger.debug(f"HTTP error {exc.code}: {detail}")
-                if exc.code == 429 and self.retries_on_rate_limit and attempt < len(self.RETRY_DELAYS):
-                    last_rate_limit = exc
+                if self._is_retryable(exc.code) and attempt < len(self.RETRY_DELAYS):
+                    last_error = exc
+                    last_headers = exc.headers
                     continue
                 raise MistralError(f"HTTP {exc.code} from Mistral API: {detail}") from exc
-            except urllib.error.URLError as exc:
+            except (urllib.error.URLError, TimeoutError) as exc:
                 if self._debug:
-                    logger.debug(f"URL error: {exc.reason}")
-                raise MistralError(f"could not reach the Mistral API: {exc.reason}") from exc
-        raise MistralError("rate limit retries exhausted") from last_rate_limit
+                    logger.debug(f"Network error: {exc}")
+                if self.retries_on_rate_limit and attempt < len(self.RETRY_DELAYS):
+                    last_error = exc
+                    last_headers = None
+                    continue
+                reason = getattr(exc, "reason", exc)
+                raise MistralError(f"could not reach the Mistral API: {reason}") from exc
+        if isinstance(last_error, urllib.error.HTTPError):
+            raise MistralError(
+                f"HTTP {last_error.code} from Mistral API: retries exhausted"
+            ) from last_error
+        raise MistralError("could not reach the Mistral API: retries exhausted") from last_error
+
+    def _is_retryable(self, status: int) -> bool:
+        """Rate limits and server errors are transient; other 4xx errors are not."""
+        return self.retries_on_rate_limit and (status == 429 or 500 <= status <= 599)
+
+    @staticmethod
+    def _retry_after_delay(headers: Any) -> float | None:
+        """Read a Retry-After header (delta-seconds or HTTP-date), if usable."""
+        raw = headers.get("Retry-After") if headers else None
+        if not raw:
+            return None
+        raw = raw.strip()
+        try:
+            seconds = float(raw)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(raw)
+            except (TypeError, ValueError, IndexError):
+                return None
+            if retry_at is None:
+                return None
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, min(seconds, MAX_RETRY_AFTER_SECONDS))
 
     def _retry_delay(self, attempt: int) -> float:
         base = self.RETRY_DELAYS[attempt - 1]

@@ -40,6 +40,15 @@ The default model is `mistral-small-latest`. You can customize it in several way
 
 Available models: `mistral-tiny-latest`, `mistral-small-latest`, `mistral-medium-latest`, `mistral-large-latest`, and any custom model endpoints you have access to.
 
+### Transient failures
+
+The client retries rate limits (429), server errors (5xx), and dropped
+connections up to two times with jittered backoff. Other 4xx responses fail
+immediately because retrying them cannot help. When the API sends a
+`Retry-After` header (seconds or an HTTP date), the client honours it up to a
+30-second cap instead of using its own backoff. Pass
+`MistralClient(retries_on_rate_limit=False)` to disable all retries.
+
 For local use of the GitHub tools, install the [gh CLI](https://cli.github.com/) and authenticate (`gh auth login`) or set `GH_TOKEN` to a token with repository access.
 
 ## Usage
