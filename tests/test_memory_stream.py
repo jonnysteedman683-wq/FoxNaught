@@ -475,6 +475,9 @@ class LoadHistoryErrorTest(unittest.TestCase):
             "non-string tool_call_id": '[{"role": "tool", "tool_call_id": 1, "content": "ok"}]',
             "tool_calls not a list": '[{"role": "assistant", "tool_calls": "now_utc"}]',
             "tool call not an object": '[{"role": "assistant", "tool_calls": ["now_utc"]}]',
+            "tool call function not an object": '[{"role": "assistant", "tool_calls": [{"function": "now_utc"}]}]',
+            "tool call name not a string": '[{"role": "assistant", "tool_calls": [{"function": {"name": 5}}]}]',
+            "tool call id not a string": '[{"role": "assistant", "tool_calls": [{"id": ["c1"], "function": {"name": "now_utc"}}]}]',
         }
         for label, raw in cases.items():
             with self.subTest(label):
@@ -529,6 +532,17 @@ class LoadHistoryErrorTest(unittest.TestCase):
         self.assertEqual([m.role for m in self.agent.history], ["system", "user", "assistant", "tool", "assistant"])
         self.assertEqual(self.agent.history[3].tool_call_id, "c1")
         self.assertEqual((self.agent.runs, self.agent.last_report_run), (2, 1))
+
+    def test_malformed_tool_call_rejected_before_trim_archives_it(self) -> None:
+        archive = os.path.join(os.path.dirname(self.path), "MEMORY.md")
+        self.agent.memory_archive_path = archive
+        self.agent.history_limit = 10
+        for calls in ([{"function": "now_utc"}], [{"function": {"name": 5}}], [{"id": ["c1"]}]):
+            with self.subTest(calls=calls):
+                messages = [{"role": "assistant", "tool_calls": calls}]
+                messages += [{"role": "user", "content": f"u{i}"} for i in range(30)]
+                self.assert_rejected(json.dumps({"messages": messages}), pattern="tool call")
+                self.assertFalse(os.path.exists(archive))
 
     def test_directory_path_raises_os_error(self) -> None:
         with self.assertRaises(OSError):

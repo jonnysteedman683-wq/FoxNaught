@@ -291,6 +291,35 @@ class ArchiveEdgeCaseTest(unittest.TestCase):
         self.assertIn("older entries were pruned", content)
         self.assertFalse(os.path.exists(nested + ".tmp"))
 
+    def test_multiline_content_is_one_entry(self) -> None:
+        archive_messages(self.archive, [Message(role="user", content="one\n- two\nthree")], max_chars=None)
+        self.assertIn("- user: one\n  - two\n  three\n", self.read())
+        self.assertEqual(entries(self.read()), ["- user: one"])
+
+    def test_compaction_never_keeps_part_of_a_multiline_entry(self) -> None:
+        archive_messages(
+            self.archive,
+            [
+                Message(role="user", content="\n".join(f"line {i:02d}" for i in range(20))),
+                Message(role="assistant", content="ok"),
+            ],
+            max_chars=None,
+        )
+        compact_archive(self.archive, 200)
+        body = self.read().split(")_\n\n", 1)[1]
+        self.assertEqual(body, "- assistant: ok\n")
+
+    def test_compaction_drops_unindented_fragment_from_old_archive(self) -> None:
+        with open(self.archive, "w", encoding="utf-8") as fh:
+            fh.write(
+                "# Conversation memory archive\n\n- user: first\n"
+                + "".join(f"continued {i}\n" for i in range(20))
+                + "- assistant: last\n"
+            )
+        compact_archive(self.archive, 150)
+        body = self.read().split(")_\n\n", 1)[1]
+        self.assertEqual(body, "- assistant: last\n")
+
     def test_compact_missing_file_is_noop(self) -> None:
         compact_archive(self.archive, 0)
         self.assertFalse(os.path.exists(self.archive))

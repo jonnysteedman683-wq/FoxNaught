@@ -301,6 +301,9 @@ def archive_messages(
         text = (message.content or "").strip()
         if len(text) > ARCHIVE_LINE_CAP:
             text = text[:ARCHIVE_LINE_CAP] + " …"
+        # Indent continuation lines so only an entry's first line starts with
+        # "- ", which lets compaction keep or drop each entry whole.
+        text = text.replace("\n", "\n  ")
         if message.tool_calls:
             calls = "; ".join(
                 (call.get("function") or {}).get("name", "unknown")
@@ -357,6 +360,9 @@ def compact_archive(path: str, max_chars: int) -> None:
     if len(body) > budget:
         newline = body.find("\n", len(body) - budget - 1)
         body = body[newline + 1 :] if newline != -1 else ""
+        if not body.startswith("- "):
+            entry = body.find("\n- ")
+            body = body[entry + 1 :] if entry != -1 else ""
     if preamble + body == content:
         return
     tmp_path = path + ".tmp"
@@ -402,6 +408,15 @@ def _history_message(entry: Any, index: int, path: str) -> Message:
         not isinstance(tool_calls, list) or not all(isinstance(call, dict) for call in tool_calls)
     ):
         raise invalid("tool_calls must be a list of objects")
+    for call in tool_calls or []:
+        function = call.get("function")
+        if call.get("id") is not None and not isinstance(call["id"], str):
+            raise invalid("tool call id must be a string")
+        if function is not None and (
+            not isinstance(function, dict)
+            or (function.get("name") is not None and not isinstance(function["name"], str))
+        ):
+            raise invalid("tool call function must be an object with a string name")
     return Message(
         role=role,
         content=entry.get("content"),
