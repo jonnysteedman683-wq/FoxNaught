@@ -94,6 +94,32 @@ class BuiltinsTest(unittest.TestCase):
     def test_calculate_rejects_syntax_error(self) -> None:
         self.assertTrue(calculate("1 +").startswith("Error:"))
 
+    def test_calculate_rejects_huge_exponent(self) -> None:
+        result = calculate("9**(9**9)")
+        self.assertTrue(result.startswith("Error:"), result)
+        self.assertIn("exponent", result)
+
+    def test_calculate_rejects_huge_integer_result(self) -> None:
+        result = calculate("2**4000 * 2**4000 * 2**4000")
+        self.assertTrue(result.startswith("Error:"), result)
+        self.assertIn("too large", result)
+
+    def test_calculate_rejects_long_expression(self) -> None:
+        result = calculate("1+" * 2000 + "1")
+        self.assertTrue(result.startswith("Error:"), result)
+        self.assertIn("longer than", result)
+
+    def test_calculate_rejects_deep_nesting(self) -> None:
+        result = calculate("(" * 400 + "1" + ")" * 400)
+        self.assertTrue(result.startswith("Error:"), result)
+
+    def test_calculate_rejects_non_string(self) -> None:
+        self.assertTrue(calculate(123).startswith("Error:"))  # type: ignore[arg-type]
+
+    def test_calculate_allows_bounded_large_power(self) -> None:
+        self.assertEqual(calculate("2**100"), str(2**100))
+        self.assertEqual(calculate("2**4000 * 2"), str(2**4001))
+
     def test_now_utc_supported_timezone(self) -> None:
         self.assertNowValid(now_utc())
 

@@ -272,7 +272,7 @@ Without it, agent runs fail with a clear error message.
 
 | Tool | Purpose | Requirements | Notes |
 |---|---|---|---|
-| `calculate` | Safe arithmetic evaluation | — | Supports +, -, *, /, //, %, **, parentheses, constants pi/e/tau, functions abs, round, min, max, sqrt, log, exp, sin, cos, tan. Rejects anything non-mathematical |
+| `calculate` | Safe arithmetic evaluation | — | Supports +, -, *, /, //, %, **, parentheses, constants pi/e/tau, functions abs, round, min, max, sqrt, log, exp, sin, cos, tan. Rejects anything non-mathematical; expressions are capped at 1000 characters, exponents at 4096, and integer results at 8192 bits to prevent resource exhaustion |
 | `now_utc` | Current UTC time, ISO-8601 | — | UTC only; timezone parameter must be "UTC" |
 | `fetch_url` | Fetch a public web page as text | network | SSRF-protected; blocks private/loopback/reserved/multicast hosts; redirects re-validated (max 5), connection pinned to the resolved IP; max 512KB download, 4000 char return |
 | `read_file` | Read a text file | — | Relative to the working directory; 64 KB cap; cannot escape sandbox |
