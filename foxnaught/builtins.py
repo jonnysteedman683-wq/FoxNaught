@@ -64,10 +64,13 @@ def _safe_eval(node: ast.AST) -> object:
         left = _safe_eval(node.left)
         right = _safe_eval(node.right)
         if isinstance(node.op, ast.Pow) and isinstance(right, int):
-            if right < 0 or right > MAX_EXPONENT:
+            if abs(right) > MAX_EXPONENT:
                 raise ValueError("exponent is out of range")
-            if isinstance(left, int) and left.bit_length() * right > MAX_INT_BITS:
-                raise ValueError("integer result is too large")
+            # log2 gives a tight estimate; bit_length() would over-reject bases
+            # like 4, whose logarithm is far below its bit width.
+            if isinstance(left, int) and abs(left) > 1 and right > 0:
+                if math.log2(abs(left)) * right > MAX_INT_BITS:
+                    raise ValueError("integer result is too large")
         return _bounded_int(_BIN_OPS[type(node.op)](left, right))
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
         return _bounded_int(_UNARY_OPS[type(node.op)](_safe_eval(node.operand)))

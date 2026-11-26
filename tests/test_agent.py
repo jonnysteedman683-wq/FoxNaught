@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from unittest import mock
 
 from foxnaught.agent import Agent
-from foxnaught.builtins import calculate, now_utc, register_defaults
+from foxnaught.builtins import (
+    MAX_INT_BITS,
+    _bounded_int,
+    calculate,
+    now_utc,
+    register_defaults,
+)
 from foxnaught.client import ChatResponse, Message, MistralClient, MistralError
 from foxnaught.tools import ToolRegistry
 
@@ -119,6 +125,19 @@ class BuiltinsTest(unittest.TestCase):
     def test_calculate_allows_bounded_large_power(self) -> None:
         self.assertEqual(calculate("2**100"), str(2**100))
         self.assertEqual(calculate("2**4000 * 2"), str(2**4001))
+
+    def test_calculate_precheck_does_not_over_reject(self) -> None:
+        # 4 has bit_length 3 but log2(4) == 2; the old precheck rejected this.
+        self.assertEqual(calculate("4**3000"), str(4**3000))
+
+    def test_calculate_allows_negative_exponent(self) -> None:
+        self.assertEqual(calculate("2**-1"), "0.5")
+        self.assertEqual(calculate("4**-2"), "0.0625")
+
+    def test_bounded_int_caps_unary_and_function_results(self) -> None:
+        self.assertEqual(_bounded_int(1 << (MAX_INT_BITS - 1)), 1 << (MAX_INT_BITS - 1))
+        with self.assertRaises(ValueError):
+            _bounded_int(1 << MAX_INT_BITS)
 
     def test_now_utc_supported_timezone(self) -> None:
         self.assertNowValid(now_utc())
