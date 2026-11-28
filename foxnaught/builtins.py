@@ -40,6 +40,18 @@ _FUNCTIONS: dict[str, Callable[..., float]] = {
     "tan": math.tan,
 }
 
+# The calculator is exposed to model-generated input, so bound the work an
+# expression can request. Without these caps, 9**9**9 alone can exhaust memory.
+MAX_EXPRESSION_CHARS = 1_000
+MAX_EXPONENT = 4_096
+MAX_INT_BITS = 8_192
+
+
+def _bounded_int(value: object) -> object:
+    if isinstance(value, int) and value.bit_length() > MAX_INT_BITS:
+        raise ValueError("integer result is too large")
+    return value
+
 
 def _safe_eval(node: ast.AST) -> object:
     if isinstance(node, ast.Expression):
@@ -49,26 +61,40 @@ def _safe_eval(node: ast.AST) -> object:
     if isinstance(node, ast.Name) and node.id in _CONSTS:
         return _CONSTS[node.id]
     if isinstance(node, ast.BinOp) and type(node.op) in _BIN_OPS:
-        return _BIN_OPS[type(node.op)](_safe_eval(node.left), _safe_eval(node.right))
+        left = _safe_eval(node.left)
+        right = _safe_eval(node.right)
+        if isinstance(node.op, ast.Pow) and isinstance(right, int):
+            if abs(right) > MAX_EXPONENT:
+                raise ValueError("exponent is out of range")
+            # log2 gives a tight estimate; bit_length() would over-reject bases
+            # like 4, whose logarithm is far below its bit width.
+            if isinstance(left, int) and abs(left) > 1 and right > 0:
+                if math.log2(abs(left)) * right > MAX_INT_BITS:
+                    raise ValueError("integer result is too large")
+        return _bounded_int(_BIN_OPS[type(node.op)](left, right))
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
-        return _UNARY_OPS[type(node.op)](_safe_eval(node.operand))
+        return _bounded_int(_UNARY_OPS[type(node.op)](_safe_eval(node.operand)))
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         func = _FUNCTIONS.get(node.func.id)
         if func is None:
             raise ValueError(f"unknown function: {node.func.id}")
-        return func(*[_safe_eval(arg) for arg in node.args])
+        return _bounded_int(func(*[_safe_eval(arg) for arg in node.args]))
     raise ValueError(f"unsupported expression: {ast.dump(node)}")
 
 
 def calculate(expression: str) -> str:
-    """Safely evaluate an arithmetic expression."""
+    """Safely evaluate an arithmetic expression within bounded resource limits."""
+    if not isinstance(expression, str):
+        return "Error: expression must be a string"
+    if len(expression) > MAX_EXPRESSION_CHARS:
+        return f"Error: expression is longer than {MAX_EXPRESSION_CHARS} characters"
     try:
         tree = ast.parse(expression, mode="eval")
-    except SyntaxError as exc:
-        return f"Error: invalid expression: {exc.msg}"
+    except (SyntaxError, ValueError, RecursionError) as exc:
+        return f"Error: invalid expression: {exc}"
     try:
         return repr(_safe_eval(tree))
-    except (ValueError, ZeroDivisionError, OverflowError, TypeError) as exc:
+    except (ValueError, ZeroDivisionError, OverflowError, TypeError, RecursionError) as exc:
         return f"Error: {exc}"
 
 
@@ -85,7 +111,8 @@ def register_defaults(registry: ToolRegistry) -> None:
         description=(
             "Evaluate an arithmetic expression. Supports +, -, *, /, //, %, **, "
             "parentheses, constants pi/e/tau, and functions abs, round, min, max, "
-            "sqrt, log, exp, sin, cos, tan."
+            "sqrt, log, exp, sin, cos, tan. Very large exponents, integer results, "
+            "and long expressions are rejected."
         ),
         parameters={
             "type": "object",
