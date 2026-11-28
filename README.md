@@ -240,8 +240,8 @@ archive exists so it can `read_file` past turns that left the context window.
 The Agent workflow passes `--memory-archive MEMORY.md` and ships the archive
 inside the `agent-memory` artifact so it accumulates across daily runs. When
 the archive exceeds `--archive-max-chars` (default 100,000, `0` disables), the
-oldest entries are pruned with an inline note; per-message content is capped
-at 2,000 characters.
+oldest whole entries are pruned so the file fits the limit again, leaving a
+single inline note; per-message content is capped at 2,000 characters.
 
 **Long-term memory**: `--longterm FILE` maintains a distilled, compacted
 knowledge file that is formatted differently from the archive: dated,
@@ -347,6 +347,13 @@ conversation:
 
 The older bare-array format is still loaded for backwards compatibility
 (runs counters then start from zero).
+
+The whole file is validated before anything is loaded: `runs` and
+`last_report_run` must be non-negative integers, each message needs a `role` of
+`system`, `user`, `assistant` or `tool`, and `content`, `name`, `tool_call_id`
+must be strings and `tool_calls` a list of objects when present. A malformed
+file (bad JSON, non-UTF-8 bytes or a bad field) raises `ValueError` and leaves
+the agent untouched; `--serve` then starts with a fresh conversation.
 
 Messages also carry `tool_calls` / `tool_call_id` when tools were used, matching
 the Mistral chat-completions wire format. Files are written atomically (via
